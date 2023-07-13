@@ -1,5 +1,7 @@
 import getImage from "./imageLayer.js";
 
+const loadedImages = new Map();
+
 const map = new maplibregl.Map({
   container: 'map',
   zoom: 1,
@@ -7,14 +9,10 @@ const map = new maplibregl.Map({
   pitchWithRotate: false,
   layers: []
 });
-const loadedImages = new Map();
+map.dragRotate.disable();
+map.touchZoomRotate.disableRotation();
 
-loadAll()
-
-async function loadAll() {
-  let borders = await loadBorders();
-  initMap(borders);
-}
+loadBorders().then(initMap);
 
 function loadBorders() {
   const bounds = 'ne_110m_admin_0_countries.geojson';
@@ -105,7 +103,7 @@ async function clipImage(url, coordinates, variant = 0) {
   let minLat = Infinity;
   let maxLon = -Infinity;
   let maxLat = -Infinity;
-  for (var coord of coordinates) {
+  for (let coord of coordinates) {
     if (coord[0] < minLon) minLon = coord[0];
     if (coord[1] < minLat) minLat = coord[1];
     if (coord[0] > maxLon) maxLon = coord[0];
