@@ -35,6 +35,12 @@ Your feedback is invaluable to the improvement of this project.
 If you have any suggestions or comments, please feel free to leave them as an issue here, 
 or contact me on Twitter at  https://twitter.com/anvaka
 
+## Community discussion
+
+More than half a million people have seen this project on reddit: https://www.reddit.com/r/MapPorn/comments/14ynj3s/asked_midjourney_to_imagine_the_most/
+
+Please follow the comments trail to see what people think about it.
+
 ## License
 
 The source code in this project is licensed under MIT license. 
