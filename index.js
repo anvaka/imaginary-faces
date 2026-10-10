@@ -1,4 +1,5 @@
-import getImage from "./imageLayer.js";
+// Images are decoded, clipped and encoded in workers so the main thread stays responsive
+const WORKER_COUNT = Math.max(1, Math.min(6, (navigator.hardwareConcurrency || 4) - 1));
 
 const loadedImages = new Map();
 
@@ -12,6 +13,17 @@ const map = new maplibregl.Map({
 map.dragRotate.disable();
 map.touchZoomRotate.disableRotation();
 
+const clipQueue = createClipQueue(WORKER_COUNT);
+// Blob URLs of image sources that maplibre hasn't loaded yet, by source id
+const pendingBlobUrls = new Map();
+map.on('sourcedata', (e) => {
+  const url = pendingBlobUrls.get(e.sourceId);
+  if (url && e.isSourceLoaded) {
+    URL.revokeObjectURL(url);
+    pendingBlobUrls.delete(e.sourceId);
+  }
+});
+
 loadBorders().then(initMap);
 
 function loadBorders() {
@@ -20,14 +32,16 @@ function loadBorders() {
 }
 
 function initMap(borders) {
-  map.addSource("borders", { "type": "geojson", "data": borders });
+  map.addSource("borders", {
+    "type": "geojson",
+    "data": borders
+  });
   map.addLayer({
     "id": "country-backgrounds",
     "type": "fill",
     "source": "borders",
     "paint": { "fill-opacity": 0.0 },
   });
-
   map.addLayer({
     "id": "borders",
     "type": "line",
@@ -35,161 +49,95 @@ function initMap(borders) {
     "paint": { "line-color": "#ffffff", "line-width": 1 },
   });
 
-  loadNextCountry(0, borders);
+  for (const countryPolygon of borders.features) {
+    const countryInfo = {
+      quadrant: 0,
+      countryPolygon,
+      image: getImageUrl(countryPolygon.properties.admin),
+      loadedKeys: [],
+      version: 0
+    };
+    loadedImages.set(countryPolygon.properties.admin, countryInfo);
+    renderCountry(countryInfo);
+  }
 
   map.on('click', function (e) {
     let features = map.queryRenderedFeatures(e.point, {layers: ['country-backgrounds']});
     if (!features.length) return;
-    renderSideBar(features[0].properties.admin)
+    renderSideBar(features[0].properties.admin);
   });
 }
 
-function loadNextCountry(countryIndex, borders) {
-  let countryPolygon = borders.features[countryIndex];
-  if (!countryPolygon) return;
-
-  const countryInfo = {
-    quadrant: 0,
-    countryPolygon,
-    image: getImageUrl(countryPolygon.properties.admin),
-    loadedKeys: []
-  };
-
-  if (!countryInfo.image) return;
-  loadedImages.set(countryPolygon.properties.admin, countryInfo);
-  loadSingleCountry(countryInfo).then(() => loadNextCountry(countryIndex + 1, borders));
+// Clips the country's image in a worker, then swaps its layers in one go,
+// so the old quadrant stays visible until the new one is ready.
+function renderCountry(countryInfo) {
+  const { countryPolygon, image, quadrant } = countryInfo;
+  const version = ++countryInfo.version;
+  clipQueue.clip(image, quadrant, getOuterRings(countryPolygon)).then(results => {
+    if (version !== countryInfo.version) return;
+    countryInfo.loadedKeys.forEach(key => {
+      map.removeLayer(key);
+      map.removeSource(key);
+    });
+    countryInfo.loadedKeys = results.map(({ blob, coordinates }, polyIndex) => {
+      const imgKey = `image-${countryPolygon.properties.admin}-${quadrant}${polyIndex}-${version}`;
+      const url = URL.createObjectURL(blob);
+      pendingBlobUrls.set(imgKey, url);
+      map.addSource(imgKey, { "type": "image", "url": url, "coordinates": coordinates });
+      map.addLayer({
+        "id": imgKey,
+        "type": "raster",
+        "source": imgKey,
+        "paint": { "raster-opacity": 1 }
+      }, 'borders');
+      return imgKey;
+    });
+  }).catch(err => console.error(`Failed to render ${countryPolygon.properties.admin}`, err));
 }
 
-function loadSingleCountry(countryInfo) {
-  const {countryPolygon, image, quadrant} = countryInfo;
-  if (countryPolygon.geometry.type === "MultiPolygon") {
-    return Promise.all(getAllPolygons(countryPolygon).map((polygon, polyIndex) => {
-      return addImage(image, polygon, quadrant, polyIndex);
-    }));
-  } else if (countryPolygon.geometry.type === "Polygon") {
-    return addImage(image, countryPolygon, quadrant, 0);
-  }
+function getOuterRings(countryPolygon) {
+  const { type, coordinates } = countryPolygon.geometry;
+  if (type === "MultiPolygon") return coordinates.map(polygon => polygon[0]);
+  if (type === "Polygon") return [coordinates[0]];
+  return [];
 }
 
-async function addImage(imageSrc, countryPolygon, variant, polyIndex) {
-  if (countryPolygon.geometry.type !== "Polygon") {
-    throw new Error('Unsupported polygon type')
-  }
+function createClipQueue(workerCount) {
+  const pending = [];
+  const callbacks = new Map();
+  const idle = [];
+  let nextId = 0;
 
-  const img = await clipImage(imageSrc, countryPolygon.geometry.coordinates[0], variant);
-  const imgKey = `image-${countryPolygon.properties.admin}-${variant}${polyIndex}`;
-
-  map.addSource(imgKey, {
-    "type": "image",
-    "url": img.canvas.toDataURL(),
-    "coordinates": img.coordinates
-  });
-
-  map.addLayer({
-    "id": imgKey,
-    "type": "raster",
-    "source": imgKey,
-    "paint": { "raster-opacity": 1 }
-  }, 'borders');
-
-  loadedImages.get(countryPolygon.properties.admin).loadedKeys.push(imgKey);
-  return img;
-}
-
-async function clipImage(url, coordinates, variant = 0) {
-  let img = await getImage(url);
-
-  let minLon = Infinity;
-  let minLat = Infinity;
-  let maxLon = -Infinity;
-  let maxLat = -Infinity;
-  for (let coord of coordinates) {
-    if (coord[0] < minLon) minLon = coord[0];
-    if (coord[1] < minLat) minLat = coord[1];
-    if (coord[0] > maxLon) maxLon = coord[0];
-    if (coord[1] > maxLat) maxLat = coord[1];
-  }
-  const MAX_LATITUDE = 85.0511;
-  const MIN_LATITUDE = -85.0511;
-  minLat = Math.max(minLat, MIN_LATITUDE);
-  maxLat = Math.min(maxLat, MAX_LATITUDE);
-
-  const topLeft = mercator(minLon, maxLat);
-  const bottomRight = mercator(maxLon, minLat);
-
-  // Create canvas and context
-  const canvas = document.createElement('canvas');
-  let width = canvas.width = img.width/2;
-  let height = canvas.height = img.height/2;
-
-  const ctx = canvas.getContext('2d');
-
-  clipContextToPolygon(ctx, coordinates, (pair) => {
-    let projected = mercator(pair[0], pair[1]);
-    return {
-      x: (projected.x - topLeft.x) / (bottomRight.x - topLeft.x) * width, 
-      y: (projected.y - topLeft.y) / (bottomRight.y - topLeft.y) * height
+  for (let i = 0; i < workerCount; i++) {
+    const worker = new Worker('clipWorker.js');
+    worker.onmessage = (e) => {
+      const { id, results, error } = e.data;
+      const { resolve, reject } = callbacks.get(id);
+      callbacks.delete(id);
+      if (error) reject(new Error(error));
+      else resolve(results);
+      idle.push(worker);
+      dispatch();
     };
-  });
+    idle.push(worker);
+  }
 
-  // Draw the image
-  let sx = 0, sy = 0;
-  if (variant === 1 || variant === 3) sx += width;
-  if (variant === 2 || variant === 3) sy += height;
-
-  
-  ctx.drawImage(img.img, sx, sy, width, height, 0, 0, width, height);
-  let imageCoordinates = [
-    [minLon, maxLat],
-    [maxLon, maxLat],
-    [maxLon, minLat],
-    [minLon, minLat]
-  ];
-
-  return { canvas, coordinates: imageCoordinates };
-}
-
-function clipContextToPolygon(ctx, coordinates, project) {
-  ctx.beginPath();
-
-  var first = true;
-  for (var pair of coordinates) {
-    const p = project(pair);
-
-    if (first) {
-      ctx.moveTo(p.x, p.y);
-      first = false;
-    } else {
-      ctx.lineTo(p.x, p.y);
+  function dispatch() {
+    while (idle.length && pending.length) {
+      const { message, resolve, reject } = pending.shift();
+      callbacks.set(message.id, { resolve, reject });
+      idle.pop().postMessage(message);
     }
   }
 
-  ctx.closePath();
-  ctx.clip();
-}
-
-function getAllPolygons(multiPolygon) {
-  return multiPolygon.geometry.coordinates.map(polygon => ({
-    geometry: {
-      type: "Polygon",
-      coordinates: polygon
-    },
-    properties: multiPolygon.properties,
-  }));
-}
-
-function mercator(lon, lat) {
-    const R = 6378137;  // Earth radius
-    const DEG = Math.PI / 180;
-
-    const sin = Math.sin(lat * DEG);
-    if (Math.abs(sin) > 1) sin = Math.sign(sin);
-
-    // Mercator projection
-    const y = R * Math.log((1 + sin) / (1 - sin)) / 2;
-    const x = R * lon * DEG;
-
-    return { x: x, y: y };
+  return {
+    clip(url, quadrant, rings) {
+      return new Promise((resolve, reject) => {
+        pending.push({ message: { id: nextId++, url, quadrant, rings }, resolve, reject });
+        dispatch();
+      });
+    }
+  };
 }
 
 function renderSideBar(countryName) {
@@ -239,14 +187,7 @@ function renderSideBar(countryName) {
     const countryInfo = loadedImages.get(countryName);
     if (!countryInfo || countryInfo.quadrant === quadrant) return;
     countryInfo.quadrant = quadrant;
-    countryInfo.loadedKeys.forEach(key => {
-      // delete old sources/layers for this key:
-      map.removeLayer(key);
-      map.removeSource(key);
-    });
-    countryInfo.quadrant = quadrant;
-    countryInfo.loadedKeys = [];
-    loadSingleCountry(countryInfo);
+    renderCountry(countryInfo);
     if (window.innerWidth < 600) {
       sidebar.innerHTML = '';
       sidebar.style.display = 'none';
