@@ -109,7 +109,7 @@ function createClipQueue(workerCount) {
   let nextId = 0;
 
   for (let i = 0; i < workerCount; i++) {
-    const worker = new Worker('clipWorker.js');
+    const worker = new Worker(new URL('./clipWorker.js', import.meta.url));
     worker.onmessage = (e) => {
       const { id, results, error } = e.data;
       const { resolve, reject } = callbacks.get(id);
@@ -133,7 +133,9 @@ function createClipQueue(workerCount) {
   return {
     clip(url, quadrant, rings) {
       return new Promise((resolve, reject) => {
-        pending.push({ message: { id: nextId++, url, quadrant, rings }, resolve, reject });
+        // Absolute, since relative URLs in a worker resolve against the worker's own location
+        const absoluteUrl = new URL(url, document.baseURI).href;
+        pending.push({ message: { id: nextId++, url: absoluteUrl, quadrant, rings }, resolve, reject });
         dispatch();
       });
     }
