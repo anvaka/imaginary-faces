@@ -1,13 +1,15 @@
-// Fetches a country image, decodes it, and clips one quadrant of it to each
+// Fetches a country image, decodes it, and clips the cropped part of it to each
 // of the country's polygons. Runs entirely off the main thread.
 self.onmessage = async (e) => {
-  const { id, url, quadrant, rings } = e.data;
+  const { id, url, crop, rings } = e.data;
   try {
-    const bitmap = await createImageBitmap(await (await fetch(url)).blob());
-    const width = bitmap.width / 2;
-    const height = bitmap.height / 2;
-    const sx = (quadrant === 1 || quadrant === 3) ? width : 0;
-    const sy = (quadrant === 2 || quadrant === 3) ? height : 0;
+    const response = await fetch(url);
+    if (!response.ok) throw new Error(`HTTP ${response.status} for ${url}`);
+    const bitmap = await createImageBitmap(await response.blob());
+    const width = Math.round(bitmap.width * crop.width);
+    const height = Math.round(bitmap.height * crop.height);
+    const sx = Math.round(bitmap.width * crop.x);
+    const sy = Math.round(bitmap.height * crop.y);
 
     const results = [];
     for (const ring of rings) {
