@@ -22,7 +22,7 @@ export const SOURCES = {
     imageUrl: (country, gender) => `faces/grok-imagine-2/${fileName(country)}-${gender}.webp`,
     crop: () => FULL_IMAGE,
     // Requests xAI's moderation rejected on every attempt, by country
-    unavailable: {}
+    unavailable: { Australia: ['woman'] }
   }
 };
 
