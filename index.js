@@ -1,10 +1,11 @@
-import { SOURCES, CHOICES, isAvailable } from './sources.js';
+import { MODELS, PEOPLE, isAvailable } from './sources.js';
 
 // Images are decoded, clipped and encoded in workers so the main thread stays responsive
 const WORKER_COUNT = Math.max(1, Math.min(6, (navigator.hardwareConcurrency || 4) - 1));
 
 const loadedImages = new Map();
-let choice = getInitialChoice();
+// The whole map always shows one model, and one person for models that were asked about a man and a woman
+const view = getInitialView();
 let sidebarCountry = null;
 
 const map = new maplibregl.Map({
@@ -58,7 +59,8 @@ function initMap(borders) {
     const countryInfo = {
       country: countryPolygon.properties.admin,
       countryPolygon,
-      variant: choice.variant,
+      // Which of Midjourney's four candidates is shown, picked per country in the sidebar
+      quadrant: 0,
       loadedKeys: [],
       version: 0
     };
@@ -73,54 +75,68 @@ function initMap(borders) {
   });
 }
 
-function getInitialChoice() {
-  const id = new URLSearchParams(location.search).get('faces');
-  return CHOICES.find(c => c.id === id) || CHOICES[0];
+function getInitialView() {
+  const params = new URLSearchParams(location.search);
+  const model = MODELS.find(m => m.id === params.get('model')) || MODELS[0];
+  const person = PEOPLE.includes(params.get('person')) ? params.get('person') : PEOPLE[0];
+  return { model, person };
 }
 
-function setChoice(nextChoice) {
-  if (nextChoice === choice) return;
-  choice = nextChoice;
+function setView(changes) {
+  const next = { ...view, ...changes };
+  if (next.model === view.model && next.person === view.person) return;
+  const modelChanged = next.model !== view.model;
+  const imagesChanged = modelChanged || next.model.people;
+  Object.assign(view, next);
+
   const params = new URLSearchParams(location.search);
-  if (choice === CHOICES[0]) params.delete('faces');
-  else params.set('faces', choice.id);
+  if (view.model === MODELS[0]) params.delete('model');
+  else params.set('model', view.model.id);
+  if (view.model.people) params.set('person', view.person);
+  else params.delete('person');
   const query = params.toString();
   history.replaceState(null, '', location.pathname + (query ? '?' + query : '') + location.hash);
 
   renderPicker();
-  for (const countryInfo of loadedImages.values()) {
-    countryInfo.variant = choice.variant;
-    renderCountry(countryInfo);
-  }
+  if (imagesChanged) loadedImages.forEach(renderCountry);
   if (sidebarCountry) renderSideBar(sidebarCountry);
 }
 
 function renderPicker() {
   const picker = document.querySelector('#face-picker');
-  picker.innerHTML = CHOICES.map(c =>
-    `<button type="button" role="radio" aria-checked="${c === choice}" data-choice="${c.id}">${c.label}</button>`
-  ).join('');
+  picker.innerHTML = `
+    <label class="model-select">
+      <span class="visually-hidden">Model</span>
+      <select aria-label="Model">${MODELS.map(m =>
+        `<option value="${m.id}"${m === view.model ? ' selected' : ''}>${m.name} · ${m.year}</option>`
+      ).join('')}</select>
+    </label>
+    ${view.model.people ? `<div class="person-toggle" role="radiogroup" aria-label="Person">${view.model.people.map(person =>
+      `<button type="button" role="radio" aria-checked="${person === view.person}" data-person="${person}">${person}</button>`
+    ).join('')}</div>` : ''}`;
+  picker.querySelector('select').onchange = (e) => setView({ model: MODELS.find(m => m.id === e.target.value) });
   picker.onclick = (e) => {
-    const button = e.target.closest('button[data-choice]');
-    if (button) setChoice(CHOICES.find(c => c.id === button.dataset.choice));
+    const button = e.target.closest('button[data-person]');
+    if (button) setView({ person: button.dataset.person });
   };
 }
 
 // Clips the country's image in a worker, then swaps its layers in one go,
 // so the previous image stays visible until the new one is ready.
 function renderCountry(countryInfo) {
-  const { country, countryPolygon, variant } = countryInfo;
-  const sourceId = choice.source;
-  const source = SOURCES[sourceId];
+  const { country, countryPolygon } = countryInfo;
+  const { model } = view;
+  // Midjourney is the only model with several candidates in one image
+  const variant = model.people ? view.person : countryInfo.quadrant;
   const version = ++countryInfo.version;
-  if (!isAvailable(sourceId, country, variant)) {
+  if (!isAvailable(model, country, variant)) {
     replaceLayers(countryInfo, []);
     return;
   }
-  clipQueue.clip(source.imageUrl(country, variant), source.crop(variant), getOuterRings(countryPolygon)).then(results => {
+  clipQueue.clip(model.imageUrl(country, variant), model.crop(variant), getOuterRings(countryPolygon)).then(results => {
     if (version !== countryInfo.version) return;
     replaceLayers(countryInfo, results.map(({ blob, coordinates }, polyIndex) => {
-      const imgKey = `image-${country}-${sourceId}-${variant}-${polyIndex}-${version}`;
+      const imgKey = `image-${country}-${model.id}-${variant}-${polyIndex}-${version}`;
       const url = URL.createObjectURL(blob);
       pendingBlobUrls.set(imgKey, url);
       map.addSource(imgKey, { "type": "image", "url": url, "coordinates": coordinates });
@@ -197,18 +213,15 @@ function renderSideBar(countryName) {
   if (!countryName) return;
   const countryInfo = loadedImages.get(countryName);
   if (!countryInfo) return;
-  const source = SOURCES[choice.source];
+  const { model } = view;
   sidebarCountry = countryName;
 
   const sidebar = document.querySelector('#sidebar');
   sidebar.innerHTML = `
-    <h3 class='query-title'>Query sent to <a href="${source.link}">${source.name}</a>
+    <h3 class='query-title'>Query sent to <a href="${model.link}">${model.name}</a>
     <a href='#' class='close'>[x]</a>
     </h3>
-    <code>${choice.source === 'midjourney'
-      ? `/imagine prompt:"Most stereotypical person in <b>${countryName}</b>"`
-      : `Most stereotypical <b>${countryInfo.variant}</b> in <b>${countryName}</b>. No text.`}</code>
-    ${choice.source === 'midjourney' ? quadrantPickerHtml(countryName) : variantPickerHtml(choice.source, countryInfo)}
+    ${model.people ? peopleHtml(model, countryName) : quadrantPickerHtml(model, countryName)}
     <hr />
     <iframe src="https://en.m.wikipedia.org/wiki/${countryName}" width="100%" height="100%" frameborder="0"></iframe>
   `;
@@ -219,8 +232,7 @@ function renderSideBar(countryName) {
     closeSideBar();
   });
 
-  if (choice.source === 'midjourney') bindQuadrantPicker(sidebar, countryInfo);
-  else bindVariantPicker(sidebar, countryInfo);
+  if (!model.people) bindQuadrantPicker(sidebar, countryInfo);
 }
 
 function closeSideBar() {
@@ -230,17 +242,17 @@ function closeSideBar() {
   sidebarCountry = null;
 }
 
-function selectVariant(countryInfo, variant) {
-  if (countryInfo.variant === variant) return;
-  countryInfo.variant = variant;
+function selectQuadrant(countryInfo, quadrant) {
+  if (countryInfo.quadrant === quadrant) return;
+  countryInfo.quadrant = quadrant;
   renderCountry(countryInfo);
   if (window.innerWidth < 600) closeSideBar();
-  else renderSideBar(countryInfo.country);
 }
 
-function quadrantPickerHtml(countryName) {
-  const url = SOURCES.midjourney.imageUrl(countryName);
+function quadrantPickerHtml(model, countryName) {
+  const url = model.imageUrl(countryName);
   return `
+    <code>/imagine prompt:"Most stereotypical person in <b>${countryName}</b>"</code>
     <div style="width:100%; position: relative;" class="imgContainer">
       <img src="${url}" alt="imagine most stereotypical person in ${countryName}" />
       <div class="quadrant-border"></div>
@@ -248,26 +260,20 @@ function quadrantPickerHtml(countryName) {
     <a href="${url}" target="_blank" class="result-open">Open image in new tab</a>`;
 }
 
-function variantPickerHtml(sourceId, countryInfo) {
-  const source = SOURCES[sourceId];
-  return `<div class="variant-grid">${source.variants.map(variant => {
-    if (!isAvailable(sourceId, countryInfo.country, variant)) {
-      return `<div class="variant unavailable"><div class="variant-missing">${source.name} refused to generate this image: its moderation rejected every attempt.</div><span>${variant}</span></div>`;
+// Both people side by side, the one on the map first, so the other is one glance away
+function peopleHtml(model, countryName) {
+  const people = [view.person, ...model.people.filter(p => p !== view.person)];
+  return people.map(person => {
+    const prompt = `Most stereotypical <b>${person}</b> in <b>${countryName}</b>. No text.`;
+    if (!isAvailable(model, countryName, person)) {
+      return `<code>${prompt}</code>
+        <p class="person-missing">${model.name} refused to generate this image: its moderation rejected every attempt.</p>`;
     }
-    const url = source.imageUrl(countryInfo.country, variant);
-    return `<button type="button" class="variant" data-variant="${variant}" aria-pressed="${variant === countryInfo.variant}">
-      <img src="${url}" alt="${source.prompt(countryInfo.country, variant)}" />
-      <span>${variant}</span>
-    </button>`;
-  }).join('')}</div>
-  <p class="variant-hint">Each image is a separate request. Click one to show it on the map.</p>`;
-}
-
-function bindVariantPicker(sidebar, countryInfo) {
-  sidebar.querySelector('.variant-grid').addEventListener('click', (e) => {
-    const button = e.target.closest('button[data-variant]');
-    if (button) selectVariant(countryInfo, button.dataset.variant);
-  });
+    const url = model.imageUrl(countryName, person);
+    return `<code>${prompt}</code>
+      <img src="${url}" alt="${model.prompt(countryName, person)}" />
+      <a href="${url}" target="_blank" class="result-open">Open image in new tab</a>`;
+  }).join('');
 }
 
 function bindQuadrantPicker(sidebar, countryInfo) {
@@ -289,7 +295,7 @@ function bindQuadrantPicker(sidebar, countryInfo) {
   mainImage.addEventListener('click', (e) => {
     const { quadrant } = getQuadrant(e, mainImage);
     if (quadrant < 0 || quadrant > 3) throw new Error('Invalid quadrant');
-    selectVariant(countryInfo, quadrant);
+    selectQuadrant(countryInfo, quadrant);
   });
 
   function getQuadrant(e, mainImage) {
