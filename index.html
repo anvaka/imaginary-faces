@@ -233,6 +233,24 @@
       font-size: 11px;
       color: #aaa;
     }
+    #face-picker .load-progress {
+      position: absolute;
+      left: 6px;
+      right: 6px;
+      bottom: 0;
+      height: 2px;
+      overflow: hidden;
+      background: rgba(255, 255, 255, 0.15);
+    }
+    #face-picker .load-progress::after {
+      content: "";
+      position: absolute;
+      inset: 0;
+      background: deeppink;
+      transform-origin: left;
+      transform: scaleX(var(--progress, 0));
+      transition: transform 0.2s;
+    }
     .person-toggle {
       display: flex;
       gap: 2px;

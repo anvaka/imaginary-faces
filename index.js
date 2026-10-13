@@ -1,11 +1,18 @@
-import { MODELS, PEOPLE, isAvailable } from './sources.js';
+import { MODELS, PEOPLE, FACE_SIZES, isAvailable } from './sources.js';
+import { createClipQueue } from './clipQueue.js';
 
 // Images are decoded, clipped and encoded in workers so the main thread stays responsive
 const WORKER_COUNT = Math.max(1, Math.min(6, (navigator.hardwareConcurrency || 4) - 1));
+// How the old set looks while a new one loads, so it can't pass for the new one
+const STALE_PAINT = { 'raster-opacity': 0.25, 'raster-saturation': -1 };
+// Matches maplibre's default paint transition, used to fade sets in and out
+const FADE_MS = 300;
 
-const loadedImages = new Map();
+const countries = new Map();
 // The whole map always shows one model, and one person for models that were asked about a man and a woman
 const view = getInitialView();
+// The set being loaded, if any: { replace, pending: countries still loading, total }
+let loading = null;
 let sidebarCountry = null;
 
 const map = new maplibregl.Map({
@@ -19,14 +26,10 @@ map.dragRotate.disable();
 map.touchZoomRotate.disableRotation();
 
 const clipQueue = createClipQueue(WORKER_COUNT);
-// Blob URLs of image sources that maplibre hasn't loaded yet, by source id
-const pendingBlobUrls = new Map();
+// Callbacks for image sources maplibre hasn't loaded yet, by source id
+const sourceWaiters = new Map();
 map.on('sourcedata', (e) => {
-  const url = pendingBlobUrls.get(e.sourceId);
-  if (url && e.isSourceLoaded) {
-    URL.revokeObjectURL(url);
-    pendingBlobUrls.delete(e.sourceId);
-  }
+  if (e.isSourceLoaded) sourceWaiters.get(e.sourceId)?.();
 });
 
 renderPicker();
@@ -57,18 +60,28 @@ function initMap(borders) {
   });
 
   for (const countryPolygon of borders.features) {
-    const countryInfo = {
+    const rings = getOuterRings(countryPolygon);
+    countries.set(countryPolygon.properties.admin, {
       country: countryPolygon.properties.admin,
-      countryPolygon,
+      rings,
+      ringBounds: rings.map(getRingBounds),
       // Which of Midjourney's four candidates is shown, picked per country in the sidebar
       quadrant: 0,
-      loadedKeys: [],
-      version: 0
-    };
-    loadedImages.set(countryInfo.country, countryInfo);
-    renderCountry(countryInfo);
+      // Layers on the map and the face size they show
+      shown: { keys: [], size: 0 },
+      // Hidden layers of the set being loaded, shown all at once when every country has them
+      incoming: [],
+      // Layers added but not yet loaded by maplibre
+      unsettled: [],
+      // Size of a sharper face being loaded, if any
+      sharpening: 0,
+      // Bumped whenever the country's face changes, to drop results of older requests
+      generation: 0
+    });
   }
+  loadSet(false);
 
+  map.on('moveend', sharpenVisible);
   map.on('click', function (e) {
     let features = map.queryRenderedFeatures(e.point, {layers: ['country-backgrounds']});
     if (!features.length) return;
@@ -99,7 +112,7 @@ function setView(changes) {
   history.replaceState(null, '', location.pathname + (query ? '?' + query : '') + location.hash);
 
   renderPicker();
-  if (imagesChanged) loadedImages.forEach(renderCountry);
+  if (imagesChanged && countries.size) loadSet(true);
   if (sidebarCountry) renderSideBar(sidebarCountry);
 }
 
@@ -120,9 +133,11 @@ function renderPicker() {
         <span class="model-prompt">${promptTemplateHtml(m)}</span>
       </li>`).join('')}
     </ul>
+    <div class="load-progress" role="progressbar" aria-label="Loading faces" aria-valuemin="0" aria-valuemax="100" hidden></div>
     ${view.model.people ? `<div class="person-toggle" role="radiogroup" aria-label="Person">${view.model.people.map(person =>
       `<button type="button" role="radio" aria-checked="${person === view.person}" data-person="${person}">${person}</button>`
     ).join('')}</div>` : ''}`;
+  updateProgress();
 }
 
 // What each model was asked, with the country left as a placeholder
@@ -197,47 +212,195 @@ function bindPicker() {
   });
 }
 
-// Clips the country's image in a worker, then swaps its layers in one go,
-// so the previous image stays visible until the new one is ready.
-function renderCountry(countryInfo) {
-  const { country, countryPolygon } = countryInfo;
-  const { model } = view;
-  // Midjourney is the only model with several candidates in one image
-  const variant = model.people ? view.person : countryInfo.quadrant;
-  const version = ++countryInfo.version;
-  if (!isAvailable(model, country, variant)) {
-    clipQueue.cancel(country);
-    replaceLayers(countryInfo, []);
-    return;
+// Loads the current set: the smallest face of every country, the ones on screen
+// first. When replacing a set, the old one is dimmed right away and the new one
+// stays hidden until every country has it, then fades in all at once, so the
+// map never mixes two sets. On the first load faces appear as they arrive.
+function loadSet(replace) {
+  const set = loading = { replace, pending: new Set(countries.keys()), total: countries.size };
+  for (const info of countries.values()) {
+    info.generation++;
+    info.sharpening = 0;
+    removeLayers(info.incoming);
+    removeLayers(info.unsettled);
+    info.incoming = [];
+    if (replace) info.shown.keys.forEach(dimLayer);
   }
-  // Keyed by country, so this replaces any earlier request for it that hasn't finished
-  clipQueue.clip(country, model.imageUrl(country, variant), model.crop(variant), getOuterRings(countryPolygon)).then(results => {
-    if (!results || version !== countryInfo.version) return;
-    replaceLayers(countryInfo, results.map(({ blob, coordinates }, polyIndex) => {
-      const imgKey = `image-${country}-${model.id}-${variant}-${polyIndex}-${version}`;
-      const url = URL.createObjectURL(blob);
-      pendingBlobUrls.set(imgKey, url);
-      map.addSource(imgKey, { "type": "image", "url": url, "coordinates": coordinates });
-      map.addLayer({
-        "id": imgKey,
-        "type": "raster",
-        "source": imgKey,
-        "paint": { "raster-opacity": 1 }
-      }, 'borders');
-      return imgKey;
-    }));
-  }).catch(err => {
-    if (version === countryInfo.version) replaceLayers(countryInfo, []);
-    console.error(`Failed to render ${country}`, err);
+  updateProgress();
+  for (const info of countries.values()) loadIntoSet(info, set);
+}
+
+function loadIntoSet(info, set) {
+  const generation = ++info.generation;
+  removeLayers(info.incoming);
+  info.incoming = [];
+  const priority = getScreenSize(info).visible ? 0 : 1;
+  loadFace(info, FACE_SIZES[0], priority, set.replace ? 0 : 1).then(keys => {
+    if (keys === null || generation !== info.generation) return;
+    if (set.replace) {
+      info.incoming = keys;
+    } else {
+      removeLayers(info.shown.keys);
+      info.shown = { keys, size: FACE_SIZES[0] };
+    }
+    set.pending.delete(info.country);
+    updateProgress();
+    if (!set.pending.size) finishSet(set);
   });
 }
 
-function replaceLayers(countryInfo, newKeys) {
-  countryInfo.loadedKeys.forEach(key => {
+function finishSet(set) {
+  if (loading !== set) return;
+  loading = null;
+  if (set.replace) {
+    for (const info of countries.values()) {
+      const old = info.shown.keys;
+      info.incoming.forEach(key => map.setPaintProperty(key, 'raster-opacity', 1));
+      info.shown = { keys: info.incoming, size: FACE_SIZES[0] };
+      info.incoming = [];
+      // Keep the dimmed faces under the new ones until those have faded in
+      setTimeout(() => removeLayers(old), FADE_MS);
+    }
+  }
+  updateProgress();
+  sharpenVisible();
+}
+
+// Swaps in sharper faces for countries that are on screen and drawn bigger than
+// their current face, the biggest first
+function sharpenVisible() {
+  if (loading) return;
+  const pixelRatio = window.devicePixelRatio || 1;
+  for (const info of countries.values()) {
+    const { visible, facePixels } = getScreenSize(info);
+    if (!visible) continue;
+    // Allow some upscaling before fetching the next size
+    const size = FACE_SIZES.find(s => s >= facePixels * pixelRatio * 0.8) || FACE_SIZES[FACE_SIZES.length - 1];
+    if (size <= Math.max(info.shown.size, info.sharpening)) continue;
+    showFace(info, size, 2 + 1 / facePixels);
+  }
+}
+
+// Replaces one country's face, keeping the old one until the new one is loaded
+function showFace(info, size, priority) {
+  const generation = ++info.generation;
+  info.sharpening = size;
+  loadFace(info, size, priority, 1).then(keys => {
+    if (keys === null || generation !== info.generation) return;
+    removeLayers(info.shown.keys);
+    info.shown = { keys, size };
+    info.sharpening = 0;
+  });
+}
+
+// Clips the country's face at the given size and adds it to the map. Resolves
+// to the new layer ids once maplibre has loaded them, or to null if a newer
+// request for the country came in meanwhile.
+async function loadFace(info, size, priority, opacity) {
+  const generation = info.generation;
+  const { model } = view;
+  // Midjourney is the only model with several candidates in one image
+  const variant = model.people ? view.person : info.quadrant;
+  if (!isAvailable(model, info.country, variant)) {
+    clipQueue.cancel(info.country);
+    return [];
+  }
+  const { url, crop } = model.face(info.country, variant, size);
+  let results;
+  try {
+    // Keyed by country, so this cancels any earlier request for it that hasn't finished
+    results = await clipQueue.clip(info.country, url, crop, info.rings, priority);
+  } catch (err) {
+    console.error(`Failed to load ${info.country}`, err);
+    results = [];
+  }
+  if (!results || generation !== info.generation) return null;
+
+  const keys = results.map(({ blob, coordinates }, polyIndex) =>
+    addImageLayer(`face-${info.country}-${model.id}-${variant}-${size}-${polyIndex}-${generation}`, blob, coordinates, opacity));
+  info.unsettled.push(...keys);
+  await Promise.all(keys.map(whenSourceLoaded));
+  info.unsettled = info.unsettled.filter(key => !keys.includes(key));
+  if (generation !== info.generation) {
+    removeLayers(keys);
+    return null;
+  }
+  return keys;
+}
+
+function addImageLayer(key, blob, coordinates, opacity) {
+  const url = URL.createObjectURL(blob);
+  map.addSource(key, { "type": "image", "url": url, "coordinates": coordinates });
+  map.addLayer({
+    "id": key,
+    "type": "raster",
+    "source": key,
+    "paint": { "raster-opacity": opacity }
+  }, 'borders');
+  const loaded = new Promise(resolve => sourceWaiters.set(key, resolve));
+  loaded.then(() => {
+    sourceWaiters.delete(key);
+    URL.revokeObjectURL(url);
+  });
+  return key;
+}
+
+function whenSourceLoaded(key) {
+  return new Promise(resolve => {
+    const done = sourceWaiters.get(key);
+    if (!done) return resolve();
+    sourceWaiters.set(key, () => { done(); resolve(); });
+  });
+}
+
+function removeLayers(keys) {
+  for (const key of keys) {
+    if (!map.getLayer(key)) continue;
     map.removeLayer(key);
     map.removeSource(key);
-  });
-  countryInfo.loadedKeys = newKeys;
+    // Lets anything waiting on this source move on
+    sourceWaiters.get(key)?.();
+  }
+}
+
+function dimLayer(key) {
+  for (const [property, value] of Object.entries(STALE_PAINT)) map.setPaintProperty(key, property, value);
+}
+
+function updateProgress() {
+  const progress = document.querySelector('#face-picker .load-progress');
+  const done = loading ? loading.total - loading.pending.size : 0;
+  // Also shown before the countries are known, while the page starts up
+  progress.hidden = !loading && countries.size > 0;
+  progress.style.setProperty('--progress', loading ? done / loading.total : 0);
+  progress.setAttribute('aria-valuenow', Math.round(loading ? 100 * done / loading.total : 100));
+}
+
+// Where the country is on screen: whether any part of it is visible, and how
+// many CSS pixels its biggest visible face spans
+function getScreenSize(info) {
+  const { clientWidth: width, clientHeight: height } = map.getCanvas();
+  let visible = false;
+  let facePixels = 0;
+  for (const [[minLon, minLat], [maxLon, maxLat]] of info.ringBounds) {
+    const topLeft = map.project([minLon, maxLat]);
+    const bottomRight = map.project([maxLon, minLat]);
+    if (bottomRight.x < 0 || topLeft.x > width || bottomRight.y < 0 || topLeft.y > height) continue;
+    visible = true;
+    facePixels = Math.max(facePixels, bottomRight.x - topLeft.x, bottomRight.y - topLeft.y);
+  }
+  return { visible, facePixels };
+}
+
+function getRingBounds(ring) {
+  let minLon = Infinity, minLat = Infinity, maxLon = -Infinity, maxLat = -Infinity;
+  for (const [lon, lat] of ring) {
+    minLon = Math.min(minLon, lon);
+    minLat = Math.min(minLat, lat);
+    maxLon = Math.max(maxLon, lon);
+    maxLat = Math.max(maxLat, lat);
+  }
+  return [[minLon, minLat], [maxLon, maxLat]];
 }
 
 function getOuterRings(countryPolygon) {
@@ -247,75 +410,9 @@ function getOuterRings(countryPolygon) {
   return [];
 }
 
-// Runs clip jobs on a pool of workers, one job per worker at a time. A job is
-// keyed by country: a new job for the same key cancels the old one, whether it
-// is still waiting or already downloading, and the old promise resolves to null.
-// Without this, switching sets mid-load would wait for every stale image first.
-function createClipQueue(workerCount) {
-  const pending = [];
-  const jobs = new Map(); // key -> job, for jobs that are waiting or running
-  const running = new Map(); // job id -> job
-  const idle = [];
-  let nextId = 0;
-
-  for (let i = 0; i < workerCount; i++) {
-    const worker = new Worker(new URL('./clipWorker.js', import.meta.url));
-    worker.onmessage = (e) => {
-      const { id, results, error } = e.data;
-      const job = running.get(id);
-      running.delete(id);
-      if (jobs.get(job.key) === job) jobs.delete(job.key);
-      if (job.cancelled) job.resolve(null);
-      else if (error) job.reject(new Error(error));
-      else job.resolve(results);
-      idle.push(worker);
-      dispatch();
-    };
-    idle.push(worker);
-  }
-
-  function dispatch() {
-    while (idle.length && pending.length) {
-      const job = pending.shift();
-      job.worker = idle.pop();
-      running.set(job.message.id, job);
-      job.worker.postMessage(job.message);
-    }
-  }
-
-  function cancel(key) {
-    const job = jobs.get(key);
-    if (!job) return;
-    jobs.delete(key);
-    job.cancelled = true;
-    if (job.worker) {
-      // The worker answers the cancel like any job, which frees it for the next one
-      job.worker.postMessage({ cancel: job.message.id });
-    } else {
-      pending.splice(pending.indexOf(job), 1);
-      job.resolve(null);
-    }
-  }
-
-  return {
-    cancel,
-    clip(key, url, crop, rings) {
-      cancel(key);
-      return new Promise((resolve, reject) => {
-        // Absolute, since relative URLs in a worker resolve against the worker's own location
-        const absoluteUrl = new URL(url, document.baseURI).href;
-        const job = { key, resolve, reject, message: { id: nextId++, url: absoluteUrl, crop, rings } };
-        jobs.set(key, job);
-        pending.push(job);
-        dispatch();
-      });
-    }
-  };
-}
-
 function renderSideBar(countryName) {
   if (!countryName) return;
-  const countryInfo = loadedImages.get(countryName);
+  const countryInfo = countries.get(countryName);
   if (!countryInfo) return;
   const { model } = view;
   sidebarCountry = countryName;
@@ -349,7 +446,8 @@ function closeSideBar() {
 function selectQuadrant(countryInfo, quadrant) {
   if (countryInfo.quadrant === quadrant) return;
   countryInfo.quadrant = quadrant;
-  renderCountry(countryInfo);
+  if (loading?.pending.has(countryInfo.country)) loadIntoSet(countryInfo, loading);
+  else showFace(countryInfo, Math.max(countryInfo.shown.size, FACE_SIZES[0]), 0);
   if (window.innerWidth < 600) closeSideBar();
 }
 
