@@ -54,12 +54,13 @@ export function createClipQueue(workerCount) {
 
   return {
     cancel,
-    clip(key, url, crop, rings, priority = 0) {
+    // request: { url, crop, rings, faces }, as clipWorker.js takes it
+    clip(key, request, priority = 0) {
       cancel(key);
       return new Promise((resolve, reject) => {
         // Absolute, since relative URLs in a worker resolve against the worker's own location
-        const absoluteUrl = new URL(url, document.baseURI).href;
-        const job = { key, priority, resolve, reject, message: { id: nextId++, url: absoluteUrl, crop, rings } };
+        const url = new URL(request.url, document.baseURI).href;
+        const job = { key, priority, resolve, reject, message: { ...request, id: nextId++, url } };
         jobs.set(key, job);
         pending.push(job);
         dispatch();

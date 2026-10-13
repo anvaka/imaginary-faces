@@ -1,5 +1,7 @@
 import { MODELS, PEOPLE, FACE_SIZES, isAvailable } from './sources.js';
 import { createClipQueue } from './clipQueue.js';
+// Where the face is in each full image, so it can be placed on land
+import faceBoxes from './faceBoxes.json';
 
 // Images are decoded, clipped and encoded in workers so the main thread stays responsive
 const WORKER_COUNT = Math.max(1, Math.min(6, (navigator.hardwareConcurrency || 4) - 1));
@@ -305,11 +307,14 @@ async function loadFace(info, size, priority, opacity) {
     clipQueue.cancel(info.country);
     return [];
   }
-  const { url, crop } = model.face(info.country, variant, size);
+  const { url, crop, region } = model.face(info.country, variant, size);
+  // Face boxes are fractions of the full image; the worker wants them in the fetched file's
+  const faces = (faceBoxes[model.imageUrl(info.country, variant)] || []).map(([x, y, w, h]) =>
+    [(x - region.x) / region.width, (y - region.y) / region.height, w / region.width, h / region.height]);
   let results;
   try {
     // Keyed by country, so this cancels any earlier request for it that hasn't finished
-    results = await clipQueue.clip(info.country, url, crop, info.rings, priority);
+    results = await clipQueue.clip(info.country, { url, crop, rings: info.rings, faces }, priority);
   } catch (err) {
     console.error(`Failed to load ${info.country}`, err);
     results = [];
