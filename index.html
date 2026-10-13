@@ -192,9 +192,12 @@
     #face-picker .model-button[aria-expanded="false"] .chevron {
       transform: rotate(180deg);
     }
+    /* Centered over the picker, which is centered on screen, so it never sticks
+       out of a narrow screen however wide the picker is */
     #model-list {
       position: absolute;
-      left: 0;
+      left: 50%;
+      transform: translateX(-50%);
       bottom: calc(100% + 6px);
       width: min(340px, calc(100vw - 32px));
       margin: 0;
