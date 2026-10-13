@@ -7,7 +7,7 @@ import faceBoxes from './faceBoxes.json';
 const WORKER_COUNT = Math.max(1, Math.min(6, (navigator.hardwareConcurrency || 4) - 1));
 // How the old set looks while a new one loads, so it can't pass for the new one
 const STALE_PAINT = { 'raster-opacity': 0.25, 'raster-saturation': -1 };
-// Matches maplibre's default paint transition, used to fade sets in and out
+// Matches maplibre's default paint transition, used to fade faces in
 const FADE_MS = 300;
 
 const countries = new Map();
@@ -73,6 +73,8 @@ function initMap(borders) {
       shown: { keys: [], size: 0 },
       // Hidden layers of the set being loaded, shown all at once when every country has them
       incoming: [],
+      // Replaced layers still under the new ones while those fade in
+      retiring: [],
       // Layers added but not yet loaded by maplibre
       unsettled: [],
       // Size of a sharper face being loaded, if any
@@ -225,7 +227,9 @@ function loadSet(replace) {
     info.sharpening = 0;
     removeLayers(info.incoming);
     removeLayers(info.unsettled);
+    removeLayers(info.retiring);
     info.incoming = [];
+    info.retiring = [];
     if (replace) info.shown.keys.forEach(dimLayer);
   }
   updateProgress();
@@ -237,14 +241,10 @@ function loadIntoSet(info, set) {
   removeLayers(info.incoming);
   info.incoming = [];
   const priority = getScreenSize(info).visible ? 0 : 1;
-  loadFace(info, FACE_SIZES[0], priority, set.replace ? 0 : 1).then(keys => {
+  loadFace(info, FACE_SIZES[0], priority).then(keys => {
     if (keys === null || generation !== info.generation) return;
-    if (set.replace) {
-      info.incoming = keys;
-    } else {
-      removeLayers(info.shown.keys);
-      info.shown = { keys, size: FACE_SIZES[0] };
-    }
+    if (set.replace) info.incoming = keys;
+    else swapIn(info, keys, FACE_SIZES[0]);
     set.pending.delete(info.country);
     updateProgress();
     if (!set.pending.size) finishSet(set);
@@ -256,12 +256,8 @@ function finishSet(set) {
   loading = null;
   if (set.replace) {
     for (const info of countries.values()) {
-      const old = info.shown.keys;
-      info.incoming.forEach(key => map.setPaintProperty(key, 'raster-opacity', 1));
-      info.shown = { keys: info.incoming, size: FACE_SIZES[0] };
+      swapIn(info, info.incoming, FACE_SIZES[0]);
       info.incoming = [];
-      // Keep the dimmed faces under the new ones until those have faded in
-      setTimeout(() => removeLayers(old), FADE_MS);
     }
   }
   updateProgress();
@@ -287,18 +283,32 @@ function sharpenVisible() {
 function showFace(info, size, priority) {
   const generation = ++info.generation;
   info.sharpening = size;
-  loadFace(info, size, priority, 1).then(keys => {
+  loadFace(info, size, priority).then(keys => {
     if (keys === null || generation !== info.generation) return;
-    removeLayers(info.shown.keys);
-    info.shown = { keys, size };
+    swapIn(info, keys, size);
     info.sharpening = 0;
   });
 }
 
-// Clips the country's face at the given size and adds it to the map. Resolves
-// to the new layer ids once maplibre has loaded them, or to null if a newer
-// request for the country came in meanwhile.
-async function loadFace(info, size, priority, opacity) {
+// Fades the country's new layers in over its current ones, then removes those,
+// so the country never shows the background in between
+function swapIn(info, keys, size) {
+  const old = info.shown.keys;
+  keys.forEach(key => map.setPaintProperty(key, 'raster-opacity', 1));
+  info.shown = { keys, size };
+  if (!old.length) return;
+  info.retiring.push(...old);
+  // A little past the fade, since it starts on the next frame
+  setTimeout(() => {
+    removeLayers(old);
+    info.retiring = info.retiring.filter(key => !old.includes(key));
+  }, FADE_MS + 100);
+}
+
+// Clips the country's face at the given size and adds it to the map, hidden.
+// Resolves to the new layer ids once maplibre has loaded them, or to null if a
+// newer request for the country came in meanwhile.
+async function loadFace(info, size, priority) {
   const generation = info.generation;
   const { model } = view;
   // Midjourney is the only model with several candidates in one image
@@ -322,7 +332,7 @@ async function loadFace(info, size, priority, opacity) {
   if (!results || generation !== info.generation) return null;
 
   const keys = results.map(({ blob, coordinates }, polyIndex) =>
-    addImageLayer(`face-${info.country}-${model.id}-${variant}-${size}-${polyIndex}-${generation}`, blob, coordinates, opacity));
+    addImageLayer(`face-${info.country}-${model.id}-${variant}-${size}-${polyIndex}-${generation}`, blob, coordinates));
   info.unsettled.push(...keys);
   await Promise.all(keys.map(whenSourceLoaded));
   info.unsettled = info.unsettled.filter(key => !keys.includes(key));
@@ -333,14 +343,17 @@ async function loadFace(info, size, priority, opacity) {
   return keys;
 }
 
-function addImageLayer(key, blob, coordinates, opacity) {
+// Layers start hidden, and swapIn fades them in. Maplibre's own fade-in of new
+// raster images is off: it starts from transparent, which made a replaced
+// face flash the background.
+function addImageLayer(key, blob, coordinates) {
   const url = URL.createObjectURL(blob);
   map.addSource(key, { "type": "image", "url": url, "coordinates": coordinates });
   map.addLayer({
     "id": key,
     "type": "raster",
     "source": key,
-    "paint": { "raster-opacity": opacity }
+    "paint": { "raster-opacity": 0, "raster-fade-duration": 0 }
   }, 'borders');
   const loaded = new Promise(resolve => sourceWaiters.set(key, resolve));
   loaded.then(() => {
