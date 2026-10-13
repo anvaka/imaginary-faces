@@ -1,8 +1,8 @@
-// Fetches a country image, decodes it, and clips the cropped part of it to each
-// of the country's polygons. Runs entirely off the main thread.
-// Face boxes ({ faces }, [x, y, w, h] fractions of the fetched image) come from
+// Decodes a country image and clips the cropped part of it to each of the
+// country's polygons, off the main thread. clipQueue.js downloads the image.
+// Face boxes ({ faces }, [x, y, w, h] fractions of the image) come from
 // faceBoxes.json, which scripts/face-detection/ writes.
-// A { cancel: id } message aborts that job, including its download.
+// A { cancel: id } message aborts that job.
 //
 // The image keeps its aspect ratio. Each big ring (a "host") gets its own copy,
 // scaled and moved so the face lands on land; small rings next to a host
@@ -22,13 +22,12 @@ self.onmessage = async (e) => {
     controllers.get(e.data.cancel)?.abort();
     return;
   }
-  const { id, url, crop, rings, faces } = e.data;
+  const { id, blob, crop, rings, faces } = e.data;
   const controller = new AbortController();
   const { signal } = controller;
   controllers.set(id, controller);
   try {
-    const response = await fetchWithRetry(url, signal);
-    const bitmap = await createImageBitmap(await response.blob());
+    const bitmap = await createImageBitmap(blob);
     const src = {
       bitmap,
       x: Math.round(bitmap.width * crop.x),
@@ -232,23 +231,6 @@ function fadeEdges(ctx, x, y, w, h, f) {
     ctx.fillRect(rx, ry, rw, rh);
   }
   ctx.globalCompositeOperation = 'source-over';
-}
-
-// Retries server errors and dropped connections, which static hosts' CDNs
-// return now and then, a couple of times with a short pause
-async function fetchWithRetry(url, signal, retries = 2) {
-  for (let attempt = 0; ; attempt++) {
-    let response;
-    try {
-      response = await fetch(url, { signal });
-    } catch (err) {
-      if (signal.aborted || attempt >= retries) throw err;
-    }
-    if (response?.ok) return response;
-    if (response && (response.status < 500 || attempt >= retries)) throw new Error(`HTTP ${response.status} for ${url}`);
-    await new Promise(resolve => setTimeout(resolve, 500 * (attempt + 1)));
-    signal.throwIfAborted();
-  }
 }
 
 const MAX_LATITUDE = 85.0511;

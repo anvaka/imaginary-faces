@@ -1,13 +1,22 @@
-// Runs clip jobs on a pool of workers, one job per worker at a time, lowest
-// priority number first. A job is keyed by country: a new job for the same key
-// cancels the old one, whether it is still waiting or already downloading, and
-// the old promise resolves to null.
+// Downloads country images many at a time and clips them on a pool of workers,
+// one job per worker at a time, lowest priority number first. A job is keyed by
+// country: a new job for the same key cancels the old one, whether it is still
+// waiting, downloading or being clipped, and the old promise resolves to null.
+//
+// Downloads used to run in the workers, one per worker, which left them waiting
+// on the network most of the time; now the next jobs download while others clip.
+const DOWNLOADS_IN_FLIGHT = 24;
+
 export function createClipQueue(workerCount) {
-  const pending = [];
-  const jobs = new Map(); // key -> job, for jobs that are waiting or running
-  const running = new Map(); // job id -> job
+  const toDownload = []; // jobs waiting for a download slot
+  const toClip = []; // downloaded jobs waiting for a worker
+  const jobs = new Map(); // key -> job, until it's done
+  const running = new Map(); // job id -> job being clipped
   const idle = [];
+  let downloading = 0;
   let nextId = 0;
+  // Images likely to be asked for soon, by URL, from the latest prefetch call
+  let prefetched = new Map();
 
   for (let i = 0; i < workerCount; i++) {
     const worker = new Worker(new URL('./clipWorker.js', import.meta.url));
@@ -26,15 +35,34 @@ export function createClipQueue(workerCount) {
   }
 
   function dispatch() {
-    while (idle.length && pending.length) {
-      let next = 0;
-      for (let i = 1; i < pending.length; i++) {
-        if (pending[i].priority < pending[next].priority) next = i;
-      }
-      const [job] = pending.splice(next, 1);
+    while (downloading < DOWNLOADS_IN_FLIGHT && toDownload.length) download(takeFirst(toDownload));
+    while (idle.length && toClip.length) {
+      const job = takeFirst(toClip);
       job.worker = idle.pop();
-      running.set(job.message.id, job);
-      job.worker.postMessage(job.message);
+      running.set(job.id, job);
+      job.worker.postMessage({ ...job.request, id: job.id, blob: job.blob });
+      job.blob = null;
+    }
+  }
+
+  async function download(job) {
+    downloading++;
+    // A prefetched image is used once; if its download failed, it's tried again
+    const early = prefetched.get(job.request.url);
+    prefetched.delete(job.request.url);
+    if (early) job.controller = early.controller;
+    try {
+      job.blob = (early && await early.blob.catch(() => null)) ||
+        await fetchBlob(job.request.url, { signal: job.controller.signal });
+      if (!job.cancelled) toClip.push(job);
+    } catch (err) {
+      if (!job.cancelled) {
+        jobs.delete(job.key);
+        job.reject(err);
+      }
+    } finally {
+      downloading--;
+      dispatch();
     }
   }
 
@@ -43,28 +71,80 @@ export function createClipQueue(workerCount) {
     if (!job) return;
     jobs.delete(key);
     job.cancelled = true;
+    job.controller.abort();
     if (job.worker) {
       // The worker answers the cancel like any job, which frees it for the next one
-      job.worker.postMessage({ cancel: job.message.id });
+      job.worker.postMessage({ cancel: job.id });
     } else {
-      pending.splice(pending.indexOf(job), 1);
+      remove(toDownload, job);
+      remove(toClip, job);
       job.resolve(null);
     }
   }
 
   return {
     cancel,
-    // request: { url, crop, rings, faces }, as clipWorker.js takes it
+    // request: { url, crop, rings, faces }, as clipWorker.js takes it, with the
+    // image's URL in place of the image
     clip(key, request, priority = 0) {
       cancel(key);
       return new Promise((resolve, reject) => {
-        // Absolute, since relative URLs in a worker resolve against the worker's own location
-        const url = new URL(request.url, document.baseURI).href;
-        const job = { key, priority, resolve, reject, message: { ...request, id: nextId++, url } };
+        const job = { key, priority, resolve, reject, request, id: nextId++, controller: new AbortController() };
         jobs.set(key, job);
-        pending.push(job);
+        toDownload.push(job);
         dispatch();
       });
+    },
+    // Starts downloading images that are likely to be asked for next, behind
+    // anything else, so asking for them then doesn't wait for the network. Only
+    // the latest call's images are kept; the rest of an earlier call's stop.
+    prefetch(urls) {
+      const next = new Map();
+      for (const url of urls) {
+        let early = prefetched.get(url);
+        if (!early) {
+          const controller = new AbortController();
+          early = { controller, blob: fetchBlob(url, { signal: controller.signal, priority: 'low' }) };
+          // Failures are seen, and retried, by the job that uses the image, if any
+          early.blob.catch(() => {});
+        }
+        next.set(url, early);
+      }
+      for (const [url, early] of prefetched) {
+        if (!next.has(url)) early.controller.abort();
+      }
+      prefetched = next;
     }
   };
+}
+
+// Lowest priority number, the earliest of those on a tie
+function takeFirst(list) {
+  let first = 0;
+  for (let i = 1; i < list.length; i++) {
+    if (list[i].priority < list[first].priority) first = i;
+  }
+  return list.splice(first, 1)[0];
+}
+
+function remove(list, item) {
+  const index = list.indexOf(item);
+  if (index >= 0) list.splice(index, 1);
+}
+
+// Retries server errors and dropped connections, which static hosts' CDNs
+// return now and then, a couple of times with a short pause
+async function fetchBlob(url, { signal, priority = 'auto' }, retries = 2) {
+  for (let attempt = 0; ; attempt++) {
+    let response;
+    try {
+      response = await fetch(url, { signal, priority });
+    } catch (err) {
+      if (signal.aborted || attempt >= retries) throw err;
+    }
+    if (response?.ok) return response.blob();
+    if (response && (response.status < 500 || attempt >= retries)) throw new Error(`HTTP ${response.status} for ${url}`);
+    await new Promise(resolve => setTimeout(resolve, 500 * (attempt + 1)));
+    signal.throwIfAborted();
+  }
 }

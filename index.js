@@ -19,6 +19,10 @@ let sidebarCountry = null;
 // The model the sidebar shows. It opens on the map's model, and the thumbnails at
 // its top switch it, to compare models for one country without reloading the map.
 let sidebarModel = null;
+// The model whose faces download ahead while the user points at it, and the
+// timer that waits to see the pointer stay there
+let prefetching = null;
+let prefetchTimer = 0;
 
 const map = new maplibregl.Map({
   container: 'map',
@@ -110,6 +114,9 @@ function setView(changes) {
   const modelChanged = next.model !== view.model;
   const imagesChanged = modelChanged || next.model.people;
   Object.assign(view, next);
+  // The faces a model would show depend on the view, so pointing at it downloads afresh
+  prefetching = null;
+  clearTimeout(prefetchTimer);
 
   const params = new URLSearchParams(location.search);
   if (view.model === MODELS[0]) params.delete('model');
@@ -177,6 +184,7 @@ function bindPicker() {
   function setActive(option) {
     options().forEach(o => o.classList.toggle('active', o === option));
     list().setAttribute('aria-activedescendant', option.id);
+    prefetchSet(MODELS.find(m => m.id === option.dataset.model));
   }
   function choose(option) {
     close(false);
@@ -269,6 +277,24 @@ function finishSet(set) {
   sharpenVisible();
 }
 
+// Downloads a model's faces while the user points at it to switch, so choosing
+// it doesn't wait for the network. They're the faces loadSet starts with.
+function prefetchSet(model) {
+  if (model === prefetching) return;
+  prefetching = model;
+  clearTimeout(prefetchTimer);
+  // After a moment, so a pointer on its way past other models doesn't download them
+  prefetchTimer = setTimeout(() => {
+    if (model === view.model) return;
+    const urls = [];
+    for (const info of countries.values()) {
+      const variant = faceVariant(model, info);
+      if (isAvailable(model, info.country, variant)) urls.push(model.face(info.country, variant, FACE_SIZES[0]).url);
+    }
+    clipQueue.prefetch(urls);
+  }, 150);
+}
+
 // Swaps in sharper faces for countries that are on screen and drawn bigger than
 // their current face, the biggest first
 function sharpenVisible() {
@@ -316,8 +342,7 @@ function swapIn(info, keys, size) {
 async function loadFace(info, size, priority) {
   const generation = info.generation;
   const { model } = view;
-  // Midjourney is the only model with several candidates in one image
-  const variant = model.people ? view.person : info.quadrant;
+  const variant = faceVariant(model, info);
   if (!isAvailable(model, info.country, variant)) {
     clipQueue.cancel(info.country);
     return [];
@@ -346,6 +371,12 @@ async function loadFace(info, size, priority) {
     return null;
   }
   return keys;
+}
+
+// Which of the model's images the map shows for the country: the person's, or
+// for Midjourney, the only model with several candidates in one image, the picked one
+function faceVariant(model, info) {
+  return model.people ? view.person : info.quadrant;
 }
 
 // Layers start hidden, and swapIn fades them in. Maplibre's own fade-in of new
@@ -478,7 +509,7 @@ function showInSideBar(model) {
 function modelStripHtml(countryInfo) {
   const { country } = countryInfo;
   return MODELS.map(model => {
-    const variant = model.people ? view.person : countryInfo.quadrant;
+    const variant = faceVariant(model, countryInfo);
     const checked = model === sidebarModel;
     const thumb = isAvailable(model, country, variant)
       ? `<span class="thumb"><img src="${model.face(country, variant, FACE_SIZES[0]).url}" alt="" /></span>`
@@ -513,6 +544,12 @@ function bindSideBar() {
       else sidebar.querySelector('.model-strip [aria-checked="true"]').focus();
     }
   });
+  // Pointing at "Show on the map" downloads the faces it would show
+  const prefetchShown = (e) => {
+    if (e.target.closest('.show-on-map')) prefetchSet(sidebarModel);
+  };
+  sidebar.addEventListener('pointerover', prefetchShown);
+  sidebar.addEventListener('focusin', prefetchShown);
   // Left and right step through the models; up and down still scroll the sidebar
   sidebar.addEventListener('keydown', (e) => {
     const step = { ArrowRight: 1, ArrowLeft: -1 }[e.key];
