@@ -137,25 +137,17 @@
       background: rgba(0, 0, 0, 0.8);
       border-radius: 6px;
       max-width: calc(100% - 32px);
-      overflow-x: auto;
+      font-size: 13px;
     }
-    #face-picker select,
     #face-picker button {
       font: inherit;
-      font-size: 13px;
       color: #ddd;
+      background: transparent;
       border: none;
       border-radius: 4px;
       padding: 7px 12px;
       cursor: pointer;
       white-space: nowrap;
-    }
-    #face-picker select {
-      color: #fff;
-      background: #333;
-    }
-    #face-picker button {
-      background: transparent;
     }
     #face-picker button:hover {
       color: #fff;
@@ -164,10 +156,82 @@
       background: #fff;
       color: #000;
     }
-    #face-picker select:focus-visible,
-    #face-picker button:focus-visible {
+    #face-picker button:focus-visible,
+    #model-list:focus-visible {
       outline: 2px solid deeppink;
       outline-offset: 2px;
+    }
+    #face-picker .model-button {
+      display: flex;
+      align-items: baseline;
+      gap: 6px;
+      color: #fff;
+      background: rgba(255, 255, 255, 0.12);
+      min-width: 0;
+    }
+    #face-picker .model-button:hover {
+      background: rgba(255, 255, 255, 0.2);
+    }
+    #face-picker .model-button .model-name {
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+    #face-picker .model-year {
+      color: #999;
+      font-variant-numeric: tabular-nums;
+    }
+    #face-picker .chevron {
+      width: 10px;
+      height: 6px;
+      align-self: center;
+      fill: none;
+      stroke: currentColor;
+      stroke-width: 1.5;
+      transition: transform 0.15s;
+    }
+    #face-picker .model-button[aria-expanded="false"] .chevron {
+      transform: rotate(180deg);
+    }
+    #model-list {
+      position: absolute;
+      left: 0;
+      bottom: calc(100% + 6px);
+      width: min(340px, calc(100vw - 32px));
+      margin: 0;
+      padding: 4px;
+      list-style: none;
+      background: rgba(0, 0, 0, 0.88);
+      border-radius: 6px;
+      box-shadow: 0 6px 24px rgba(0, 0, 0, 0.35);
+    }
+    #model-list [role="option"] {
+      display: grid;
+      grid-template-columns: 1fr auto;
+      gap: 2px 8px;
+      padding: 8px 10px 8px 22px;
+      border-radius: 4px;
+      color: #fff;
+      cursor: pointer;
+      position: relative;
+    }
+    #model-list [role="option"].active {
+      background: rgba(255, 255, 255, 0.12);
+    }
+    #model-list [role="option"][aria-selected="true"]::before {
+      content: "";
+      position: absolute;
+      left: 9px;
+      top: 14px;
+      width: 6px;
+      height: 6px;
+      border-radius: 50%;
+      background: deeppink;
+    }
+    #model-list .model-prompt {
+      grid-column: 1 / -1;
+      font-family: ui-monospace, Menlo, Consolas, monospace;
+      font-size: 11px;
+      color: #aaa;
     }
     .person-toggle {
       display: flex;

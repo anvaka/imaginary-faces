@@ -1,9 +1,19 @@
 // Fetches a country image, decodes it, and clips the cropped part of it to each
 // of the country's polygons. Runs entirely off the main thread.
+// A { cancel: id } message aborts that job, including its download.
+const controllers = new Map();
+
 self.onmessage = async (e) => {
+  if ('cancel' in e.data) {
+    controllers.get(e.data.cancel)?.abort();
+    return;
+  }
   const { id, url, crop, rings } = e.data;
+  const controller = new AbortController();
+  const { signal } = controller;
+  controllers.set(id, controller);
   try {
-    const response = await fetch(url);
+    const response = await fetch(url, { signal });
     if (!response.ok) throw new Error(`HTTP ${response.status} for ${url}`);
     const bitmap = await createImageBitmap(await response.blob());
     const width = Math.round(bitmap.width * crop.width);
@@ -12,18 +22,24 @@ self.onmessage = async (e) => {
     const sy = Math.round(bitmap.height * crop.y);
 
     const results = [];
-    for (const ring of rings) {
-      const { bounds, coordinates } = getBounds(ring);
-      const canvas = new OffscreenCanvas(width, height);
-      const ctx = canvas.getContext('2d');
-      clipToRing(ctx, ring, bounds, width, height);
-      ctx.drawImage(bitmap, sx, sy, width, height, 0, 0, width, height);
-      results.push({ blob: await canvas.convertToBlob(), coordinates });
+    try {
+      for (const ring of rings) {
+        signal.throwIfAborted();
+        const { bounds, coordinates } = getBounds(ring);
+        const canvas = new OffscreenCanvas(width, height);
+        const ctx = canvas.getContext('2d');
+        clipToRing(ctx, ring, bounds, width, height);
+        ctx.drawImage(bitmap, sx, sy, width, height, 0, 0, width, height);
+        results.push({ blob: await canvas.convertToBlob(), coordinates });
+      }
+    } finally {
+      bitmap.close();
     }
-    bitmap.close();
     self.postMessage({ id, results });
   } catch (err) {
     self.postMessage({ id, error: String(err) });
+  } finally {
+    controllers.delete(id);
   }
 };
 

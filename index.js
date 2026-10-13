@@ -30,6 +30,7 @@ map.on('sourcedata', (e) => {
 });
 
 renderPicker();
+bindPicker();
 loadBorders().then(initMap);
 
 function loadBorders() {
@@ -102,23 +103,98 @@ function setView(changes) {
   if (sidebarCountry) renderSideBar(sidebarCountry);
 }
 
+// The picker is a model menu, which stays compact however many models there are,
+// plus a woman/man toggle for models that were asked about each separately.
 function renderPicker() {
   const picker = document.querySelector('#face-picker');
   picker.innerHTML = `
-    <label class="model-select">
-      <span class="visually-hidden">Model</span>
-      <select aria-label="Model">${MODELS.map(m =>
-        `<option value="${m.id}"${m === view.model ? ' selected' : ''}>${m.name} · ${m.year}</option>`
-      ).join('')}</select>
-    </label>
+    <button type="button" class="model-button" aria-haspopup="listbox" aria-expanded="false" aria-controls="model-list">
+      <span class="model-name">${view.model.name}</span>
+      <span class="model-year">${view.model.year}</span>
+      <svg class="chevron" viewBox="0 0 10 6" aria-hidden="true"><path d="M1 5l4-4 4 4" /></svg>
+    </button>
+    <ul id="model-list" role="listbox" aria-label="Model" tabindex="-1" hidden>${MODELS.map(m => `
+      <li role="option" id="model-option-${m.id}" data-model="${m.id}" aria-selected="${m === view.model}">
+        <span class="model-name">${m.name}</span>
+        <span class="model-year">${m.year}</span>
+        <span class="model-prompt">${promptTemplateHtml(m)}</span>
+      </li>`).join('')}
+    </ul>
     ${view.model.people ? `<div class="person-toggle" role="radiogroup" aria-label="Person">${view.model.people.map(person =>
       `<button type="button" role="radio" aria-checked="${person === view.person}" data-person="${person}">${person}</button>`
     ).join('')}</div>` : ''}`;
-  picker.querySelector('select').onchange = (e) => setView({ model: MODELS.find(m => m.id === e.target.value) });
-  picker.onclick = (e) => {
-    const button = e.target.closest('button[data-person]');
-    if (button) setView({ person: button.dataset.person });
-  };
+}
+
+// What each model was asked, with the country left as a placeholder
+function promptTemplateHtml(model) {
+  const escape = (text) => text.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/"/g, '&quot;');
+  const prompt = escape(model.prompt('\u0000', model.people?.join(' / ')));
+  return prompt.replace('\u0000', '<i>country</i>');
+}
+
+function bindPicker() {
+  const picker = document.querySelector('#face-picker');
+  const button = () => picker.querySelector('.model-button');
+  const list = () => picker.querySelector('#model-list');
+  const options = () => [...list().querySelectorAll('[role="option"]')];
+
+  function open() {
+    list().hidden = false;
+    button().setAttribute('aria-expanded', 'true');
+    setActive(options().find(o => o.getAttribute('aria-selected') === 'true'));
+    list().focus();
+  }
+  function close(focusButton) {
+    if (list().hidden) return;
+    list().hidden = true;
+    button().setAttribute('aria-expanded', 'false');
+    if (focusButton) button().focus();
+  }
+  function setActive(option) {
+    options().forEach(o => o.classList.toggle('active', o === option));
+    list().setAttribute('aria-activedescendant', option.id);
+  }
+  function choose(option) {
+    close(false);
+    setView({ model: MODELS.find(m => m.id === option.dataset.model) });
+    button().focus();
+  }
+
+  picker.addEventListener('click', (e) => {
+    const option = e.target.closest('[role="option"]');
+    if (option) return choose(option);
+    if (e.target.closest('.model-button')) return list().hidden ? open() : close(true);
+    const person = e.target.closest('button[data-person]');
+    if (person) setView({ person: person.dataset.person });
+  });
+  picker.addEventListener('mousemove', (e) => {
+    const option = e.target.closest('[role="option"]');
+    if (option) setActive(option);
+  });
+  picker.addEventListener('keydown', (e) => {
+    if (e.target.closest('.model-button') && ['ArrowDown', 'ArrowUp'].includes(e.key)) {
+      e.preventDefault();
+      return open();
+    }
+    if (e.target !== list()) return;
+    const all = options();
+    const index = all.findIndex(o => o.classList.contains('active'));
+    const moves = { ArrowDown: index + 1, ArrowUp: index - 1, Home: 0, End: all.length - 1 };
+    if (e.key in moves) {
+      e.preventDefault();
+      setActive(all[Math.max(0, Math.min(all.length - 1, moves[e.key]))]);
+    } else if (e.key === 'Enter' || e.key === ' ') {
+      e.preventDefault();
+      choose(all[index]);
+    } else if (e.key === 'Escape') {
+      close(true);
+    } else if (e.key === 'Tab') {
+      close(false);
+    }
+  });
+  document.addEventListener('pointerdown', (e) => {
+    if (!picker.contains(e.target)) close(false);
+  });
 }
 
 // Clips the country's image in a worker, then swaps its layers in one go,
@@ -130,11 +206,13 @@ function renderCountry(countryInfo) {
   const variant = model.people ? view.person : countryInfo.quadrant;
   const version = ++countryInfo.version;
   if (!isAvailable(model, country, variant)) {
+    clipQueue.cancel(country);
     replaceLayers(countryInfo, []);
     return;
   }
-  clipQueue.clip(model.imageUrl(country, variant), model.crop(variant), getOuterRings(countryPolygon)).then(results => {
-    if (version !== countryInfo.version) return;
+  // Keyed by country, so this replaces any earlier request for it that hasn't finished
+  clipQueue.clip(country, model.imageUrl(country, variant), model.crop(variant), getOuterRings(countryPolygon)).then(results => {
+    if (!results || version !== countryInfo.version) return;
     replaceLayers(countryInfo, results.map(({ blob, coordinates }, polyIndex) => {
       const imgKey = `image-${country}-${model.id}-${variant}-${polyIndex}-${version}`;
       const url = URL.createObjectURL(blob);
@@ -169,9 +247,14 @@ function getOuterRings(countryPolygon) {
   return [];
 }
 
+// Runs clip jobs on a pool of workers, one job per worker at a time. A job is
+// keyed by country: a new job for the same key cancels the old one, whether it
+// is still waiting or already downloading, and the old promise resolves to null.
+// Without this, switching sets mid-load would wait for every stale image first.
 function createClipQueue(workerCount) {
   const pending = [];
-  const callbacks = new Map();
+  const jobs = new Map(); // key -> job, for jobs that are waiting or running
+  const running = new Map(); // job id -> job
   const idle = [];
   let nextId = 0;
 
@@ -179,10 +262,12 @@ function createClipQueue(workerCount) {
     const worker = new Worker(new URL('./clipWorker.js', import.meta.url));
     worker.onmessage = (e) => {
       const { id, results, error } = e.data;
-      const { resolve, reject } = callbacks.get(id);
-      callbacks.delete(id);
-      if (error) reject(new Error(error));
-      else resolve(results);
+      const job = running.get(id);
+      running.delete(id);
+      if (jobs.get(job.key) === job) jobs.delete(job.key);
+      if (job.cancelled) job.resolve(null);
+      else if (error) job.reject(new Error(error));
+      else job.resolve(results);
       idle.push(worker);
       dispatch();
     };
@@ -191,18 +276,37 @@ function createClipQueue(workerCount) {
 
   function dispatch() {
     while (idle.length && pending.length) {
-      const { message, resolve, reject } = pending.shift();
-      callbacks.set(message.id, { resolve, reject });
-      idle.pop().postMessage(message);
+      const job = pending.shift();
+      job.worker = idle.pop();
+      running.set(job.message.id, job);
+      job.worker.postMessage(job.message);
+    }
+  }
+
+  function cancel(key) {
+    const job = jobs.get(key);
+    if (!job) return;
+    jobs.delete(key);
+    job.cancelled = true;
+    if (job.worker) {
+      // The worker answers the cancel like any job, which frees it for the next one
+      job.worker.postMessage({ cancel: job.message.id });
+    } else {
+      pending.splice(pending.indexOf(job), 1);
+      job.resolve(null);
     }
   }
 
   return {
-    clip(url, crop, rings) {
+    cancel,
+    clip(key, url, crop, rings) {
+      cancel(key);
       return new Promise((resolve, reject) => {
         // Absolute, since relative URLs in a worker resolve against the worker's own location
         const absoluteUrl = new URL(url, document.baseURI).href;
-        pending.push({ message: { id: nextId++, url: absoluteUrl, crop, rings }, resolve, reject });
+        const job = { key, resolve, reject, message: { id: nextId++, url: absoluteUrl, crop, rings } };
+        jobs.set(key, job);
+        pending.push(job);
         dispatch();
       });
     }
