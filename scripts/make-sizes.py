@@ -1,20 +1,18 @@
 """Writes smaller copies of every face image for progressive loading.
 
-Usage: python3 scripts/make-sizes.py
+Usage: python3 scripts/make-sizes.py [set ...]
+Sets are folders under public/faces/ (e.g. grok-imagine-2), or "midjourney"
+for the 2x2 grids in public/images-small/; without any, every set is redone.
 Sizes are the width of one face on the map: 256 and 512 (the full size is 1024).
 Midjourney images are 2x2 grids of four faces, so each face gets its own file,
 <Country>-<quadrant>.webp, with quadrants numbered left to right, top to bottom.
 """
 import os
+import sys
 from concurrent.futures import ProcessPoolExecutor
 from PIL import Image
 
 ROOT = os.path.join(os.path.dirname(__file__), '..', 'public')
-SETS = [
-    # (source folder, destination folder, faces across the image)
-    ('images-small', 'faces/midjourney', 2),
-    ('faces/grok-imagine-2', 'faces/grok-imagine-2', 1),
-]
 SIZES = [256, 512]
 
 
@@ -34,9 +32,19 @@ def convert(job):
     return total
 
 
+def find_sets(names):
+    """(source folder, destination folder, faces across the image) per set."""
+    faces = os.path.join(ROOT, 'faces')
+    names = names or ['midjourney'] + sorted(
+        d for d in os.listdir(faces)
+        if d != 'midjourney' and any(f.endswith('.webp') for f in os.listdir(os.path.join(faces, d))))
+    return [('images-small', 'faces/midjourney', 2) if name == 'midjourney' else (f'faces/{name}', f'faces/{name}', 1)
+            for name in names]
+
+
 def main():
     jobs = []
-    for src_dir, dst_dir, across in SETS:
+    for src_dir, dst_dir, across in find_sets(sys.argv[1:]):
         for face_size in SIZES:
             out = os.path.join(ROOT, dst_dir, str(face_size))
             os.makedirs(out, exist_ok=True)

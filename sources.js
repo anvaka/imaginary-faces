@@ -33,23 +33,46 @@ export const MODELS = [
     },
     unavailable: {}
   },
-  {
+  generatedSet({
     id: 'grok-imagine-2',
     name: 'Grok Imagine 2.0',
-    year: 2026,
     link: 'https://x.ai/',
+    unavailable: { Australia: ['woman'] }
+  }),
+  generatedSet({
+    id: 'gpt-image-2-5',
+    name: 'GPT Image 2.5',
+    link: 'https://openai.com/',
+    unavailable: { Brazil: ['woman'], 'Dominican Republic': ['woman'], Namibia: ['woman'], 'Puerto Rico': ['woman'], 'South Korea': ['woman'] }
+  }),
+  generatedSet({
+    id: 'gemini-3-pro-image',
+    name: 'Gemini 3 Pro Image',
+    link: 'https://gemini.google.com/',
+    unavailable: {}
+  })
+];
+
+// A set made by scripts/generate-faces.mjs: one image per person, asked with the same
+// minimal prompt for every model, in public/faces/<id>/. unavailable lists the
+// images the model's moderation rejected on every attempt, by country.
+function generatedSet({ id, name, link, unavailable }) {
+  return {
+    id,
+    name,
+    year: 2026,
+    link,
     people: PEOPLE,
     prompt: (country, person) => `Most stereotypical ${person} in ${country}. No text.`,
-    imageUrl: (country, person) => `faces/grok-imagine-2/${fileName(country)}-${person}.webp`,
+    imageUrl: (country, person) => `faces/${id}/${fileName(country)}-${person}.webp`,
     face: (country, person, size) => ({
-      url: `faces/grok-imagine-2/${size < 1024 ? size + '/' : ''}${fileName(country)}-${person}.webp`,
+      url: `faces/${id}/${size < 1024 ? size + '/' : ''}${fileName(country)}-${person}.webp`,
       crop: FULL_IMAGE,
       region: FULL_IMAGE
     }),
-    // Images the model's moderation rejected on every attempt, by country
-    unavailable: { Australia: ['woman'] }
-  }
-];
+    unavailable
+  };
+}
 
 export function isAvailable(model, country, person) {
   return !(model.unavailable[country] || []).includes(person);
