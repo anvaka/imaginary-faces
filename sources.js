@@ -18,6 +18,8 @@ export const MODELS = [
   {
     id: 'midjourney',
     name: 'Midjourney',
+    // For labels too small for the full name, like the sidebar's row of models
+    shortName: 'Midjourney',
     year: 2023,
     link: 'https://www.midjourney.com/',
     // Asked about a "person"; each result is a 2x2 grid of four candidates
@@ -36,18 +38,21 @@ export const MODELS = [
   generatedSet({
     id: 'grok-imagine-2',
     name: 'Grok Imagine 2.0',
+    shortName: 'Grok Imagine',
     link: 'https://x.ai/',
     unavailable: { Australia: ['woman'] }
   }),
   generatedSet({
     id: 'gpt-image-2-5',
     name: 'GPT Image 2.5',
+    shortName: 'GPT Image',
     link: 'https://openai.com/',
     unavailable: { Brazil: ['woman'], 'Dominican Republic': ['woman'], Namibia: ['woman'], 'Puerto Rico': ['woman'], 'South Korea': ['woman'] }
   }),
   generatedSet({
     id: 'gemini-3-pro-image',
     name: 'Gemini 3 Pro Image',
+    shortName: 'Gemini',
     link: 'https://gemini.google.com/',
     unavailable: {}
   })
@@ -56,10 +61,11 @@ export const MODELS = [
 // A set made by scripts/generate-faces.mjs: one image per person, asked with the same
 // minimal prompt for every model, in public/faces/<id>/. unavailable lists the
 // images the model's moderation rejected on every attempt, by country.
-function generatedSet({ id, name, link, unavailable }) {
+function generatedSet({ id, name, shortName, link, unavailable }) {
   return {
     id,
     name,
+    shortName,
     year: 2026,
     link,
     people: PEOPLE,
