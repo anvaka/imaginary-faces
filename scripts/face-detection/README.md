@@ -12,5 +12,12 @@ curl -LO https://github.com/opencv/opencv_zoo/raw/main/models/face_detection_yun
 ```
 
 The detector (OpenCV YuNet) runs at three input sizes and keeps faces scoring
-0.82 or more. It found all 353 Grok faces and 706 of 708 Midjourney faces;
-images without a face fall back to the median face position.
+0.82 or more, preferring the biggest. That is usually the person the image is
+about, but not always: it also boxes dogs, phones, clothing patterns and
+passers-by, and misses faces under a burqa or turned away. So every new set
+gets checked by eye, and wrong boxes go into `corrections.json`, which the
+script applies on every run. Images still without a face fall back to the
+median face position.
+
+The checked sets so far needed 22 corrections out of 1,764 faces, most of them
+in Gemini's wide street scenes.

@@ -1,0 +1,23 @@
+{
+  "faces/gemini-3-pro-image/Afghanistan-woman.webp": { "boxes": [[0.23, 0.2, 0.15, 0.17]], "why": "no face found; her face is under the burqa" },
+  "faces/gemini-3-pro-image/Ivory_Coast-woman.webp": { "boxes": [[0.5, 0.307, 0.109, 0.14]], "why": "detector picked a woman at the edge" },
+  "faces/gemini-3-pro-image/Japan-woman.webp": { "boxes": [[0.548, 0.348, 0.071, 0.072]], "why": "detector picked a passer-by" },
+  "faces/gemini-3-pro-image/Jordan-man.webp": { "boxes": [[0.463, 0.28, 0.116, 0.169]], "why": "detector picked a man at the edge" },
+  "faces/gemini-3-pro-image/Liberia-woman.webp": { "boxes": [[0.43, 0.31, 0.13, 0.14]], "why": "detector picked a man in the background; she faces away" },
+  "faces/gemini-3-pro-image/Nicaragua-woman.webp": { "boxes": [[0.456, 0.379, 0.103, 0.119]], "why": "detector picked a woman at the edge" },
+  "faces/gemini-3-pro-image/Puerto_Rico-man.webp": { "boxes": [[0.534, 0.339, 0.104, 0.138]], "why": "detector picked a man at the edge" },
+  "faces/gemini-3-pro-image/Saudi_Arabia-woman.webp": { "boxes": [[0.45, 0.18, 0.1, 0.11]], "why": "detector picked a man in the background" },
+  "faces/gemini-3-pro-image/Sierra_Leone-woman.webp": { "boxes": [[0.44, 0.29, 0.14, 0.13]], "why": "no face found; she faces away" },
+  "faces/gemini-3-pro-image/Somalia-woman.webp": { "boxes": [[0.644, 0.169, 0.061, 0.087]], "why": "detector picked a vendor at the edge" },
+  "faces/gemini-3-pro-image/Syria-woman.webp": { "boxes": [[0.442, 0.309, 0.092, 0.116]], "why": "detector picked a vendor at the edge" },
+  "faces/gemini-3-pro-image/United_States_of_America-man.webp": { "boxes": [[0.599, 0.13, 0.092, 0.117]], "why": "detector picked the dog" },
+  "faces/gemini-3-pro-image/Vietnam-woman.webp": { "boxes": [[0.433, 0.31, 0.102, 0.117]], "why": "detector picked a passer-by" },
+  "faces/gpt-image-2-5/Afghanistan-woman.webp": { "boxes": [[0.37, 0.11, 0.15, 0.18]], "why": "detector picked a man in the background; her face is under the burqa" },
+  "faces/gpt-image-2-5/Australia-woman.webp": { "boxes": [[0.425, 0.055, 0.176, 0.228]], "why": "detector picked the dog" },
+  "faces/gpt-image-2-5/Canada-man.webp": { "boxes": [[0.401, 0.099, 0.143, 0.164]], "why": "detector picked the dog" },
+  "faces/gpt-image-2-5/Malaysia-woman.webp": { "boxes": [[0.411, 0.231, 0.178, 0.208]], "why": "detector picked her phone" },
+  "faces/gpt-image-2-5/Swaziland-man.webp": { "boxes": [[0.399, 0.087, 0.083, 0.101]], "why": "detector picked the pattern on his clothes" },
+  "faces/gpt-image-2-5/United_States_of_America-woman.webp": { "boxes": [[0.449, 0.079, 0.14, 0.181]], "why": "detector picked the dog" },
+  "images-small/Falkland_Islands.webp": { "boxes": [[0.239, 0.1, 0.05, 0.054], [0.744, 0.098, 0.04, 0.045]], "why": "no face found in the top two pictures: their people have penguin heads" },
+  "images-small/Kuwait.webp": { "boxes": [[0.191, 0.122, 0.06, 0.077]], "why": "detector picked a car window in the top left picture" }
+}

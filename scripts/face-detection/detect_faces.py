@@ -6,6 +6,11 @@
 # Sets are folders under public/faces/ (e.g. grok-imagine-2), or "midjourney"
 # for the 2x2 grids in public/images-small/. Without sets, every set is redone;
 # with them, only those are, and the other entries in the file are kept.
+#
+# corrections.json next to this script has boxes checked by hand where the
+# detector picks something else (a dog, a phone, a passer-by) or nothing:
+# { "<image url>": { "boxes": [[x, y, w, h], ...], "why": "..." } }. Each box
+# replaces the detected one in its cell: the whole image, or its Midjourney quadrant.
 import json
 import sys
 from pathlib import Path
@@ -16,6 +21,7 @@ public, model_path, out_path = Path(sys.argv[1]), sys.argv[2], Path(sys.argv[3])
 SCORE = 0.82
 
 detector = cv2.FaceDetectorYN.create(model_path, "", (320, 320), SCORE, 0.3, 50)
+corrections = json.loads((Path(__file__).parent / "corrections.json").read_text())
 
 
 def detect(img):
@@ -58,17 +64,23 @@ def images(set_name):
 sets = sys.argv[4:] or all_sets()
 boxes = json.loads(out_path.read_text()) if sys.argv[4:] and out_path.exists() else {}
 for set_name in sets:
-    found = total = 0
+    found = total = corrected = 0
     misses = []
     for url, path, across in images(set_name):
         img = cv2.imread(str(path))
         height, width = img.shape[:2]
         cell_w, cell_h = width // across, height // across
         found_here = []
+        fixes = corrections.get(url, {}).get("boxes", [])
         for cell in range(across * across):
             cx, cy = cell % across, cell // across
-            box = detect(img[cy * cell_h:(cy + 1) * cell_h, cx * cell_w:(cx + 1) * cell_w])
             total += 1
+            fix = next((b for b in fixes if int((b[0] + b[2] / 2) * across) == cx and int((b[1] + b[3] / 2) * across) == cy), None)
+            if fix:
+                corrected += 1
+                found_here.append(fix)
+                continue
+            box = detect(img[cy * cell_h:(cy + 1) * cell_h, cx * cell_w:(cx + 1) * cell_w])
             if not box:
                 misses.append(f"{path.stem}" + (f" quadrant {cell}" if across > 1 else ""))
                 continue
@@ -76,6 +88,6 @@ for set_name in sets:
             x, y, w, h = box
             found_here.append([round((cx + x) / across, 3), round((cy + y) / across, 3), round(w / across, 3), round(h / across, 3)])
         boxes[url] = found_here
-    print(f"{set_name}: found {found} of {total} faces" + (f"; none in: {', '.join(misses)}" if misses else ""))
+    print(f"{set_name}: found {found} of {total} faces, {corrected} set by hand" + (f"; none in: {', '.join(misses)}" if misses else ""))
 
 out_path.write_text(json.dumps(dict(sorted(boxes.items())), separators=(",", ":")))
