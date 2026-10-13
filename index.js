@@ -13,7 +13,7 @@ const FADE_MS = 300;
 const countries = new Map();
 // The whole map always shows one model, and one person for models that were asked about a man and a woman
 const view = getInitialView();
-// The set being loaded, if any: { replace, pending: countries still loading, total }
+// The set being loaded, if any: { pending: countries still loading, total }
 let loading = null;
 let sidebarCountry = null;
 // The model the sidebar shows. It opens on the map's model, and the thumbnails at
@@ -79,8 +79,6 @@ function initMap(borders) {
       quadrant: 0,
       // Layers on the map and the face size they show
       shown: { keys: [], size: 0 },
-      // Hidden layers of the set being loaded, shown all at once when every country has them
-      incoming: [],
       // Replaced layers still under the new ones while those fade in
       retiring: [],
       // Layers added but not yet loaded by maplibre
@@ -91,9 +89,13 @@ function initMap(borders) {
       generation: 0
     });
   }
-  loadSet(false);
+  loadSet();
 
-  map.on('moveend', sharpenVisible);
+  map.on('moveend', () => {
+    // While a set loads, the countries now on screen go first
+    if (loading) loading.pending.forEach(country => clipQueue.setPriority(country, loadPriority(countries.get(country))));
+    else sharpenVisible();
+  });
   map.on('click', function (e) {
     let features = map.queryRenderedFeatures(e.point, {layers: ['country-backgrounds']});
     if (!features.length) return;
@@ -127,7 +129,7 @@ function setView(changes) {
   history.replaceState(null, '', location.pathname + (query ? '?' + query : '') + location.hash);
 
   renderPicker();
-  if (imagesChanged && countries.size) loadSet(true);
+  if (imagesChanged && countries.size) loadSet();
   // The sidebar follows the map to a new model, and keeps the one it shows otherwise
   if (sidebarCountry) showInSideBar(modelChanged ? view.model : sidebarModel);
 }
@@ -230,20 +232,17 @@ function bindPicker() {
 }
 
 // Loads the current set: the smallest face of every country, the ones on screen
-// first. When replacing a set, the old one is dimmed right away and the new one
-// stays hidden until every country has it, then fades in all at once, so the
-// map never mixes two sets. On the first load faces appear as they arrive.
-function loadSet(replace) {
-  const set = loading = { replace, pending: new Set(countries.keys()), total: countries.size };
+// first. The faces of the set it replaces are greyed out right away, and each
+// country's new face replaces its grey one as soon as it arrives.
+function loadSet() {
+  const set = loading = { pending: new Set(countries.keys()), total: countries.size };
   for (const info of countries.values()) {
     info.generation++;
     info.sharpening = 0;
-    removeLayers(info.incoming);
     removeLayers(info.unsettled);
     removeLayers(info.retiring);
-    info.incoming = [];
     info.retiring = [];
-    if (replace) info.shown.keys.forEach(dimLayer);
+    info.shown.keys.forEach(dimLayer);
   }
   updateProgress();
   for (const info of countries.values()) loadIntoSet(info, set);
@@ -251,28 +250,25 @@ function loadSet(replace) {
 
 function loadIntoSet(info, set) {
   const generation = ++info.generation;
-  removeLayers(info.incoming);
-  info.incoming = [];
-  const priority = getScreenSize(info).visible ? 0 : 1;
-  loadFace(info, FACE_SIZES[0], priority).then(keys => {
+  loadFace(info, FACE_SIZES[0], loadPriority(info)).then(keys => {
     if (keys === null || generation !== info.generation) return;
-    if (set.replace) info.incoming = keys;
-    else swapIn(info, keys, FACE_SIZES[0]);
+    swapIn(info, keys, FACE_SIZES[0]);
     set.pending.delete(info.country);
     updateProgress();
     if (!set.pending.size) finishSet(set);
   });
 }
 
+// The countries on screen load first, the biggest of them first, so the new
+// set shows where the user is looking
+function loadPriority(info) {
+  const { visible, facePixels } = getScreenSize(info);
+  return visible ? 1 / (1 + facePixels) : 1;
+}
+
 function finishSet(set) {
   if (loading !== set) return;
   loading = null;
-  if (set.replace) {
-    for (const info of countries.values()) {
-      swapIn(info, info.incoming, FACE_SIZES[0]);
-      info.incoming = [];
-    }
-  }
   updateProgress();
   sharpenVisible();
 }

@@ -84,6 +84,11 @@ export function createClipQueue(workerCount) {
 
   return {
     cancel,
+    // Reorders a job that hasn't been clipped yet, e.g. when its country scrolls into view
+    setPriority(key, priority) {
+      const job = jobs.get(key);
+      if (job) job.priority = priority;
+    },
     // request: { url, crop, rings, faces }, as clipWorker.js takes it, with the
     // image's URL in place of the image
     clip(key, request, priority = 0) {
@@ -92,7 +97,9 @@ export function createClipQueue(workerCount) {
         const job = { key, priority, resolve, reject, request, id: nextId++, controller: new AbortController() };
         jobs.set(key, job);
         toDownload.push(job);
-        dispatch();
+        // After the caller's other jobs are in, so the first downloads are the
+        // most urgent ones rather than the first asked for
+        queueMicrotask(dispatch);
       });
     },
     // Starts downloading images that are likely to be asked for next, behind
