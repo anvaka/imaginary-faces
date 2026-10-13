@@ -1,22 +1,25 @@
-# Detects the main face in every map image with OpenCV's YuNet and writes
-# face boxes as fractions of the part of the image the map shows (the crop).
-# Usage: python detect_faces.py <public dir> <yunet.onnx> <out.json> [debug dir]
+# Finds the main face in every map image with OpenCV's YuNet and writes
+# faceBoxes.json: { "<image url, as in sources.js>": [[x, y, w, h], ...] } in
+# fractions of the whole image. Midjourney grids get one box per quadrant.
+#
+# Usage: python detect_faces.py <public dir> <yunet.onnx> <faceBoxes.json> [set ...]
+# Sets are folders under public/faces/ (e.g. grok-imagine-2), or "midjourney"
+# for the 2x2 grids in public/images-small/. Without sets, every set is redone;
+# with them, only those are, and the other entries in the file are kept.
 import json
 import sys
 from pathlib import Path
 
 import cv2
-import numpy as np
 
 public, model_path, out_path = Path(sys.argv[1]), sys.argv[2], Path(sys.argv[3])
-debug_dir = Path(sys.argv[4]) if len(sys.argv) > 4 else None
 SCORE = 0.82
 
 detector = cv2.FaceDetectorYN.create(model_path, "", (320, 320), SCORE, 0.3, 50)
 
 
 def detect(img):
-    """Best face as [x, y, w, h, score] in fractions of img, or None."""
+    """Best face as [x, y, w, h] in fractions of img, or None."""
     h, w = img.shape[:2]
     best = None
     # Several input sizes: big close-up faces are missed at full resolution
@@ -32,53 +35,47 @@ def detect(img):
             # Prefer big, confident faces: the subject, not people in the background
             rank = score * fw * fh
             if best is None or rank > best[0]:
-                best = (rank, [x / w, y / h, fw / w, fh / h, score])
-    return best and best[1]
-
-
-def clamp_box(b):
-    x, y, w, h, s = b
+                best = (rank, [float(x / w), float(y / h), float(fw / w), float(fh / h)])
+    if not best:
+        return None
+    x, y, fw, fh = best[1]
     x0, y0 = max(0.0, x), max(0.0, y)
-    x1, y1 = min(1.0, x + w), min(1.0, y + h)
-    return [round(float(v), 3) for v in (x0, y0, x1 - x0, y1 - y0)] + [round(float(s), 2)]
+    return [x0, y0, min(1.0, x + fw) - x0, min(1.0, y + fh) - y0]
 
 
-result = {"grok-imagine-2": {}, "midjourney": {}}
-stats = {"grok-imagine-2": [0, 0], "midjourney": [0, 0]}
-misses = []
+def all_sets():
+    faces = public / "faces"
+    return ["midjourney"] + sorted(d.name for d in faces.iterdir() if d.is_dir() and any(d.glob("*.webp")))
 
-for path in sorted((public / "faces" / "grok-imagine-2").glob("*.webp")):
-    country, person = path.stem.rsplit("-", 1)
-    img = cv2.imread(str(path))
-    box = detect(img)
-    stats["grok-imagine-2"][1] += 1
-    if box:
-        stats["grok-imagine-2"][0] += 1
-        result["grok-imagine-2"].setdefault(country, {})[person] = clamp_box(box)
-    else:
-        result["grok-imagine-2"].setdefault(country, {})[person] = None
-        misses.append(f"grok/{path.stem}")
-    if debug_dir and box:
-        pass
 
-for path in sorted((public / "images-small").glob("*.webp")):
-    img = cv2.imread(str(path))
-    H, W = img.shape[:2]
-    quads = []
-    for q in range(4):
-        x0, y0 = (q % 2) * W // 2, (q // 2) * H // 2
-        crop = img[y0:y0 + H // 2, x0:x0 + W // 2]
-        box = detect(crop)
-        stats["midjourney"][1] += 1
-        if box:
-            stats["midjourney"][0] += 1
-        else:
-            misses.append(f"mj/{path.stem}/q{q}")
-        quads.append(clamp_box(box) if box else None)
-    result["midjourney"][path.stem] = quads
+def images(set_name):
+    """(url, path, faces across) for every full-size image in the set."""
+    if set_name == "midjourney":
+        return [(f"images-small/{p.name}", p, 2) for p in sorted((public / "images-small").glob("*.webp"))]
+    return [(f"faces/{set_name}/{p.name}", p, 1) for p in sorted((public / "faces" / set_name).glob("*.webp"))]
 
-out_path.write_text(json.dumps(result, separators=(",", ":")))
-for k, (hit, total) in stats.items():
-    print(f"{k}: {hit}/{total} = {hit / total:.1%}")
-print("misses:", len(misses))
-print("\n".join(misses))
+
+sets = sys.argv[4:] or all_sets()
+boxes = json.loads(out_path.read_text()) if sys.argv[4:] and out_path.exists() else {}
+for set_name in sets:
+    found = total = 0
+    misses = []
+    for url, path, across in images(set_name):
+        img = cv2.imread(str(path))
+        height, width = img.shape[:2]
+        cell_w, cell_h = width // across, height // across
+        found_here = []
+        for cell in range(across * across):
+            cx, cy = cell % across, cell // across
+            box = detect(img[cy * cell_h:(cy + 1) * cell_h, cx * cell_w:(cx + 1) * cell_w])
+            total += 1
+            if not box:
+                misses.append(f"{path.stem}" + (f" quadrant {cell}" if across > 1 else ""))
+                continue
+            found += 1
+            x, y, w, h = box
+            found_here.append([round((cx + x) / across, 3), round((cy + y) / across, 3), round(w / across, 3), round(h / across, 3)])
+        boxes[url] = found_here
+    print(f"{set_name}: found {found} of {total} faces" + (f"; none in: {', '.join(misses)}" if misses else ""))
+
+out_path.write_text(json.dumps(dict(sorted(boxes.items())), separators=(",", ":")))

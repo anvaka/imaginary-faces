@@ -5,10 +5,10 @@ map can place each face on land instead of stretching the image over a country.
 It is written once, offline, whenever a set of images is added:
 
 ```sh
-python3 -m venv .venv && .venv/bin/pip install opencv-python numpy
+python3 -m venv .venv && .venv/bin/pip install opencv-python
 curl -LO https://github.com/opencv/opencv_zoo/raw/main/models/face_detection_yunet/face_detection_yunet_2023mar.onnx
-.venv/bin/python detect_faces.py ../../public face_detection_yunet_2023mar.onnx boxes-with-scores.json
-python3 site_json.py boxes-with-scores.json ../../faceBoxes.json
+# Only the named sets are redone; without names, every set is
+.venv/bin/python detect_faces.py ../../public face_detection_yunet_2023mar.onnx ../../faceBoxes.json <set>
 ```
 
 The detector (OpenCV YuNet) runs at three input sizes and keeps faces scoring
