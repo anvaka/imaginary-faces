@@ -13,8 +13,7 @@ self.onmessage = async (e) => {
   const { signal } = controller;
   controllers.set(id, controller);
   try {
-    const response = await fetch(url, { signal });
-    if (!response.ok) throw new Error(`HTTP ${response.status} for ${url}`);
+    const response = await fetchWithRetry(url, signal);
     const bitmap = await createImageBitmap(await response.blob());
     const width = Math.round(bitmap.width * crop.width);
     const height = Math.round(bitmap.height * crop.height);
@@ -42,6 +41,23 @@ self.onmessage = async (e) => {
     controllers.delete(id);
   }
 };
+
+// Retries server errors and dropped connections, which static hosts' CDNs
+// return now and then, a couple of times with a short pause
+async function fetchWithRetry(url, signal, retries = 2) {
+  for (let attempt = 0; ; attempt++) {
+    let response;
+    try {
+      response = await fetch(url, { signal });
+    } catch (err) {
+      if (signal.aborted || attempt >= retries) throw err;
+    }
+    if (response?.ok) return response;
+    if (response && (response.status < 500 || attempt >= retries)) throw new Error(`HTTP ${response.status} for ${url}`);
+    await new Promise(resolve => setTimeout(resolve, 500 * (attempt + 1)));
+    signal.throwIfAborted();
+  }
+}
 
 const MAX_LATITUDE = 85.0511;
 
