@@ -274,6 +274,132 @@
       background: #f3f3f3;
       border: 1px dashed #bbb;
     }
+    /* Square while loading, so switching models doesn't move what's below */
+    #sidebar .result-image {
+      display: block;
+      aspect-ratio: 1;
+      background: #eee center / cover;
+    }
+    #sidebar .result-actions {
+      display: flex;
+      flex-wrap: wrap;
+      align-items: center;
+      gap: 6px;
+      min-height: 28px;
+      padding-top: 3px;
+    }
+    #sidebar .show-on-map {
+      margin-left: auto;
+      font: inherit;
+      font-size: 12px;
+      padding: 4px 10px;
+      color: #000;
+      background: #fff;
+      border: 1px solid #000;
+      border-radius: 4px;
+      cursor: pointer;
+    }
+    #sidebar .show-on-map:hover {
+      color: #fff;
+      background: #000;
+    }
+
+    /* The model switcher stays at the top while the sidebar scrolls */
+    #sidebar .model-strip {
+      position: sticky;
+      /* The sidebar's padding */
+      top: -10px;
+      z-index: 1;
+      display: flex;
+      gap: 4px;
+      margin: 0 -10px;
+      padding: 6px 10px 4px;
+      overflow-x: auto;
+      scrollbar-width: none;
+      background: #fff;
+      border-bottom: 1px solid #e4e4e4;
+    }
+    #sidebar .model-strip button {
+      flex: 1 0 68px;
+      min-width: 0;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      padding: 0;
+      font: inherit;
+      line-height: 13px;
+      color: #333;
+      background: none;
+      border: none;
+      cursor: pointer;
+    }
+    #sidebar .model-strip .thumb {
+      width: 54px;
+      height: 54px;
+      margin-bottom: 3px;
+      border-radius: 4px;
+      overflow: hidden;
+      background: #eee;
+      outline: 2px solid transparent;
+      outline-offset: 1px;
+    }
+    #sidebar .model-strip img {
+      display: block;
+      height: 100%;
+    }
+    #sidebar .model-strip button:hover .thumb {
+      outline-color: #ccc;
+    }
+    #sidebar .model-strip button[aria-checked="true"] .thumb {
+      outline-color: #000;
+    }
+    #sidebar .model-strip button:focus-visible {
+      outline: none;
+    }
+    #sidebar .model-strip button:focus-visible .thumb,
+    #sidebar .show-on-map:focus-visible {
+      outline: 2px solid deeppink;
+      outline-offset: 1px;
+    }
+    #sidebar .model-strip .refused {
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-size: 10px;
+      color: #888;
+      background: #f3f3f3;
+      border: 1px dashed #bbb;
+    }
+    #sidebar .model-strip .model-name {
+      max-width: 100%;
+      font-size: 11px;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+    #sidebar .model-strip button[aria-checked="true"] .model-name {
+      font-weight: 600;
+    }
+    #sidebar .model-strip .model-year,
+    #sidebar .model-strip .on-map {
+      font-size: 10px;
+      color: #999;
+      font-variant-numeric: tabular-nums;
+    }
+    /* The same pink dot marks the map's model in the bottom picker's menu */
+    #sidebar .model-strip .on-map {
+      color: deeppink;
+    }
+    #sidebar .model-strip .on-map::before {
+      content: "";
+      display: inline-block;
+      width: 6px;
+      height: 6px;
+      margin-right: 3px;
+      border-radius: 50%;
+      background: deeppink;
+      vertical-align: 1px;
+    }
 
     @media (max-width: 600px) {
       #sidebar {

@@ -16,6 +16,9 @@ const view = getInitialView();
 // The set being loaded, if any: { replace, pending: countries still loading, total }
 let loading = null;
 let sidebarCountry = null;
+// The model the sidebar shows. It opens on the map's model, and the thumbnails at
+// its top switch it, to compare models for one country without reloading the map.
+let sidebarModel = null;
 
 const map = new maplibregl.Map({
   container: 'map',
@@ -36,6 +39,7 @@ map.on('sourcedata', (e) => {
 
 renderPicker();
 bindPicker();
+bindSideBar();
 loadBorders().then(initMap);
 
 function loadBorders() {
@@ -117,7 +121,8 @@ function setView(changes) {
 
   renderPicker();
   if (imagesChanged && countries.size) loadSet(true);
-  if (sidebarCountry) renderSideBar(sidebarCountry);
+  // The sidebar follows the map to a new model, and keeps the one it shows otherwise
+  if (sidebarCountry) showInSideBar(modelChanged ? view.model : sidebarModel);
 }
 
 // The picker is a model menu, which stays compact however many models there are,
@@ -432,26 +437,96 @@ function renderSideBar(countryName) {
   if (!countryName) return;
   const countryInfo = countries.get(countryName);
   if (!countryInfo) return;
-  const { model } = view;
   sidebarCountry = countryName;
 
   const sidebar = document.querySelector('#sidebar');
   sidebar.innerHTML = `
-    <h3 class='query-title'>Query sent to <a href="${model.link}">${model.name}</a>
-    <a href='#' class='close'>[x]</a>
-    </h3>
-    ${model.people ? peopleHtml(model, countryName) : quadrantPickerHtml(model, countryName)}
+    <h3 class='query-title'></h3>
+    <div class="model-strip" role="radiogroup" aria-label="Model shown in the sidebar"></div>
+    <div class="sidebar-body"></div>
     <hr />
     <iframe src="https://en.m.wikipedia.org/wiki/${countryName}" width="100%" height="100%" frameborder="0"></iframe>
   `;
   sidebar.style.display = 'block';
   sidebar.scrollTop = 0;
-  sidebar.querySelector('.close').addEventListener('click', (e) => {
-    e.preventDefault();
-    closeSideBar();
-  });
+  showInSideBar(view.model);
+  // So the arrow keys step through models rather than pan the map
+  sidebar.querySelector('.model-strip [aria-checked="true"]').focus({ preventScroll: true });
+}
 
+// Shows a model's images in the open sidebar. Only the title, the thumbnails and
+// the images are redrawn: the map and the Wikipedia page stay as they are.
+function showInSideBar(model) {
+  sidebarModel = model;
+  const countryInfo = countries.get(sidebarCountry);
+  const sidebar = document.querySelector('#sidebar');
+  sidebar.querySelector('.query-title').innerHTML = `Query sent to <a href="${model.link}">${model.name}</a>
+    <a href='#' class='close'>[x]</a>`;
+  const strip = sidebar.querySelector('.model-strip');
+  // Redrawing would scroll a row of many models back to its start
+  const stripScroll = strip.scrollLeft;
+  strip.innerHTML = modelStripHtml(countryInfo);
+  strip.scrollLeft = stripScroll;
+  sidebar.querySelector('.sidebar-body').innerHTML = model.people
+    ? peopleHtml(model, sidebarCountry)
+    : quadrantPickerHtml(model, sidebarCountry);
   if (!model.people) bindQuadrantPicker(sidebar, countryInfo);
+}
+
+// A small face per model, of the map's person (for Midjourney, the candidate
+// picked for the map), so models that answered alike are easy to spot
+function modelStripHtml(countryInfo) {
+  const { country } = countryInfo;
+  return MODELS.map(model => {
+    const variant = model.people ? view.person : countryInfo.quadrant;
+    const checked = model === sidebarModel;
+    const thumb = isAvailable(model, country, variant)
+      ? `<span class="thumb"><img src="${model.face(country, variant, FACE_SIZES[0]).url}" alt="" /></span>`
+      : `<span class="thumb refused">refused</span>`;
+    return `<button type="button" role="radio" aria-checked="${checked}" tabindex="${checked ? 0 : -1}" data-model="${model.id}" title="${model.name}, ${model.year}">
+      ${thumb}
+      <span class="model-name">${model.shortName}</span>
+      ${model === view.model ? '<span class="on-map">on map</span>' : `<span class="model-year">${model.year}</span>`}
+    </button>`;
+  }).join('');
+}
+
+// The bottom picker owns the map; this is a shortcut to it for the model in the sidebar
+function showOnMapHtml(model) {
+  if (model === view.model) return '';
+  return `<button type="button" class="show-on-map">Show ${model.shortName} on the map</button>`;
+}
+
+function bindSideBar() {
+  const sidebar = document.querySelector('#sidebar');
+  sidebar.addEventListener('click', (e) => {
+    if (e.target.closest('.close')) {
+      e.preventDefault();
+      return closeSideBar();
+    }
+    const model = e.target.closest('button[data-model]');
+    if (model) return pickSideBarModel(MODELS.find(m => m.id === model.dataset.model));
+    if (e.target.closest('.show-on-map')) {
+      setView({ model: sidebarModel });
+      // The sidebar covers the map on phones
+      if (window.innerWidth < 600) closeSideBar();
+      else sidebar.querySelector('.model-strip [aria-checked="true"]').focus();
+    }
+  });
+  // Left and right step through the models; up and down still scroll the sidebar
+  sidebar.addEventListener('keydown', (e) => {
+    const step = { ArrowRight: 1, ArrowLeft: -1 }[e.key];
+    if (!step || !e.target.closest('.model-strip')) return;
+    e.preventDefault();
+    const index = MODELS.indexOf(sidebarModel) + step;
+    pickSideBarModel(MODELS[(index + MODELS.length) % MODELS.length]);
+  });
+}
+
+// Keeps focus on the model's thumbnail, which redrawing replaces
+function pickSideBarModel(model) {
+  showInSideBar(model);
+  document.querySelector(`#sidebar button[data-model="${model.id}"]`).focus();
 }
 
 function closeSideBar() {
@@ -464,9 +539,14 @@ function closeSideBar() {
 function selectQuadrant(countryInfo, quadrant) {
   if (countryInfo.quadrant === quadrant) return;
   countryInfo.quadrant = quadrant;
-  if (loading?.pending.has(countryInfo.country)) loadIntoSet(countryInfo, loading);
-  else showFace(countryInfo, Math.max(countryInfo.shown.size, FACE_SIZES[0]), 0);
-  if (window.innerWidth < 600) closeSideBar();
+  // Picked while another model is on the map, it waits for Midjourney to be shown
+  if (!view.model.people) {
+    if (loading?.pending.has(countryInfo.country)) loadIntoSet(countryInfo, loading);
+    else showFace(countryInfo, Math.max(countryInfo.shown.size, FACE_SIZES[0]), 0);
+    if (window.innerWidth < 600) return closeSideBar();
+  }
+  // Midjourney's thumbnail shows the picked candidate
+  showInSideBar(sidebarModel);
 }
 
 function quadrantPickerHtml(model, countryName) {
@@ -474,25 +554,35 @@ function quadrantPickerHtml(model, countryName) {
   return `
     <code>/imagine prompt:"Most stereotypical person in <b>${countryName}</b>"</code>
     <div style="width:100%; position: relative;" class="imgContainer">
-      <img src="${url}" alt="imagine most stereotypical person in ${countryName}" />
+      <img class="result-image" src="${url}" alt="imagine most stereotypical person in ${countryName}" />
       <div class="quadrant-border"></div>
     </div>
-    <a href="${url}" target="_blank" class="result-open">Open image in new tab</a>`;
+    <div class="result-actions">
+      <a href="${url}" target="_blank" class="result-open">Open image in new tab</a>
+      ${showOnMapHtml(model)}
+    </div>`;
 }
 
-// Both people side by side, the one on the map first, so the other is one glance away
+// Both people side by side, the one on the map first, so the other is one glance away.
+// Each image is drawn over its small copy from the thumbnails while it loads.
 function peopleHtml(model, countryName) {
   const people = [view.person, ...model.people.filter(p => p !== view.person)];
-  return people.map(person => {
+  return people.map((person, index) => {
     const prompt = `Most stereotypical <b>${person}</b> in <b>${countryName}</b>. No text.`;
+    const showOnMap = index === 0 ? showOnMapHtml(model) : '';
     if (!isAvailable(model, countryName, person)) {
       return `<code>${prompt}</code>
-        <p class="person-missing">${model.name} refused to generate this image: its moderation rejected every attempt.</p>`;
+        <p class="person-missing">${model.name} refused to generate this image: its moderation rejected every attempt.</p>
+        ${showOnMap ? `<div class="result-actions">${showOnMap}</div>` : ''}`;
     }
     const url = model.imageUrl(countryName, person);
+    const preview = model.face(countryName, person, FACE_SIZES[0]).url;
     return `<code>${prompt}</code>
-      <img src="${url}" alt="${model.prompt(countryName, person)}" />
-      <a href="${url}" target="_blank" class="result-open">Open image in new tab</a>`;
+      <img class="result-image" src="${url}" style="background-image: url('${preview}')" alt="${model.prompt(countryName, person)}" />
+      <div class="result-actions">
+        <a href="${url}" target="_blank" class="result-open">Open image in new tab</a>
+        ${showOnMap}
+      </div>`;
   }).join('');
 }
 
