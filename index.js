@@ -13,12 +13,16 @@ const FADE_MS = 300;
 const countries = new Map();
 // The whole map always shows one model, and one person for models that were asked about a man and a woman
 const view = getInitialView();
-// The set being loaded, if any: { replace, pending: countries still loading, total }
+// The set being loaded, if any: { pending: countries still loading, total }
 let loading = null;
 let sidebarCountry = null;
 // The model the sidebar shows. It opens on the map's model, and the thumbnails at
 // its top switch it, to compare models for one country without reloading the map.
 let sidebarModel = null;
+// The model whose faces download ahead while the user points at it, and the
+// timer that waits to see the pointer stay there
+let prefetching = null;
+let prefetchTimer = 0;
 
 const map = new maplibregl.Map({
   container: 'map',
@@ -75,8 +79,6 @@ function initMap(borders) {
       quadrant: 0,
       // Layers on the map and the face size they show
       shown: { keys: [], size: 0 },
-      // Hidden layers of the set being loaded, shown all at once when every country has them
-      incoming: [],
       // Replaced layers still under the new ones while those fade in
       retiring: [],
       // Layers added but not yet loaded by maplibre
@@ -87,9 +89,13 @@ function initMap(borders) {
       generation: 0
     });
   }
-  loadSet(false);
+  loadSet();
 
-  map.on('moveend', sharpenVisible);
+  map.on('moveend', () => {
+    // While a set loads, the countries now on screen go first
+    if (loading) loading.pending.forEach(country => clipQueue.setPriority(country, loadPriority(countries.get(country))));
+    else sharpenVisible();
+  });
   map.on('click', function (e) {
     let features = map.queryRenderedFeatures(e.point, {layers: ['country-backgrounds']});
     if (!features.length) return;
@@ -110,6 +116,9 @@ function setView(changes) {
   const modelChanged = next.model !== view.model;
   const imagesChanged = modelChanged || next.model.people;
   Object.assign(view, next);
+  // The faces a model would show depend on the view, so pointing at it downloads afresh
+  prefetching = null;
+  clearTimeout(prefetchTimer);
 
   const params = new URLSearchParams(location.search);
   if (view.model === MODELS[0]) params.delete('model');
@@ -120,7 +129,7 @@ function setView(changes) {
   history.replaceState(null, '', location.pathname + (query ? '?' + query : '') + location.hash);
 
   renderPicker();
-  if (imagesChanged && countries.size) loadSet(true);
+  if (imagesChanged && countries.size) loadSet();
   // The sidebar follows the map to a new model, and keeps the one it shows otherwise
   if (sidebarCountry) showInSideBar(modelChanged ? view.model : sidebarModel);
 }
@@ -177,6 +186,7 @@ function bindPicker() {
   function setActive(option) {
     options().forEach(o => o.classList.toggle('active', o === option));
     list().setAttribute('aria-activedescendant', option.id);
+    prefetchSet(MODELS.find(m => m.id === option.dataset.model));
   }
   function choose(option) {
     close(false);
@@ -222,20 +232,17 @@ function bindPicker() {
 }
 
 // Loads the current set: the smallest face of every country, the ones on screen
-// first. When replacing a set, the old one is dimmed right away and the new one
-// stays hidden until every country has it, then fades in all at once, so the
-// map never mixes two sets. On the first load faces appear as they arrive.
-function loadSet(replace) {
-  const set = loading = { replace, pending: new Set(countries.keys()), total: countries.size };
+// first. The faces of the set it replaces are greyed out right away, and each
+// country's new face replaces its grey one as soon as it arrives.
+function loadSet() {
+  const set = loading = { pending: new Set(countries.keys()), total: countries.size };
   for (const info of countries.values()) {
     info.generation++;
     info.sharpening = 0;
-    removeLayers(info.incoming);
     removeLayers(info.unsettled);
     removeLayers(info.retiring);
-    info.incoming = [];
     info.retiring = [];
-    if (replace) info.shown.keys.forEach(dimLayer);
+    info.shown.keys.forEach(dimLayer);
   }
   updateProgress();
   for (const info of countries.values()) loadIntoSet(info, set);
@@ -243,30 +250,45 @@ function loadSet(replace) {
 
 function loadIntoSet(info, set) {
   const generation = ++info.generation;
-  removeLayers(info.incoming);
-  info.incoming = [];
-  const priority = getScreenSize(info).visible ? 0 : 1;
-  loadFace(info, FACE_SIZES[0], priority).then(keys => {
+  loadFace(info, FACE_SIZES[0], loadPriority(info)).then(keys => {
     if (keys === null || generation !== info.generation) return;
-    if (set.replace) info.incoming = keys;
-    else swapIn(info, keys, FACE_SIZES[0]);
+    swapIn(info, keys, FACE_SIZES[0]);
     set.pending.delete(info.country);
     updateProgress();
     if (!set.pending.size) finishSet(set);
   });
 }
 
+// The countries on screen load first, the biggest of them first, so the new
+// set shows where the user is looking
+function loadPriority(info) {
+  const { visible, facePixels } = getScreenSize(info);
+  return visible ? 1 / (1 + facePixels) : 1;
+}
+
 function finishSet(set) {
   if (loading !== set) return;
   loading = null;
-  if (set.replace) {
-    for (const info of countries.values()) {
-      swapIn(info, info.incoming, FACE_SIZES[0]);
-      info.incoming = [];
-    }
-  }
   updateProgress();
   sharpenVisible();
+}
+
+// Downloads a model's faces while the user points at it to switch, so choosing
+// it doesn't wait for the network. They're the faces loadSet starts with.
+function prefetchSet(model) {
+  if (model === prefetching) return;
+  prefetching = model;
+  clearTimeout(prefetchTimer);
+  // After a moment, so a pointer on its way past other models doesn't download them
+  prefetchTimer = setTimeout(() => {
+    if (model === view.model) return;
+    const urls = [];
+    for (const info of countries.values()) {
+      const variant = faceVariant(model, info);
+      if (isAvailable(model, info.country, variant)) urls.push(model.face(info.country, variant, FACE_SIZES[0]).url);
+    }
+    clipQueue.prefetch(urls);
+  }, 150);
 }
 
 // Swaps in sharper faces for countries that are on screen and drawn bigger than
@@ -316,8 +338,7 @@ function swapIn(info, keys, size) {
 async function loadFace(info, size, priority) {
   const generation = info.generation;
   const { model } = view;
-  // Midjourney is the only model with several candidates in one image
-  const variant = model.people ? view.person : info.quadrant;
+  const variant = faceVariant(model, info);
   if (!isAvailable(model, info.country, variant)) {
     clipQueue.cancel(info.country);
     return [];
@@ -346,6 +367,12 @@ async function loadFace(info, size, priority) {
     return null;
   }
   return keys;
+}
+
+// Which of the model's images the map shows for the country: the person's, or
+// for Midjourney, the only model with several candidates in one image, the picked one
+function faceVariant(model, info) {
+  return model.people ? view.person : info.quadrant;
 }
 
 // Layers start hidden, and swapIn fades them in. Maplibre's own fade-in of new
@@ -478,7 +505,7 @@ function showInSideBar(model) {
 function modelStripHtml(countryInfo) {
   const { country } = countryInfo;
   return MODELS.map(model => {
-    const variant = model.people ? view.person : countryInfo.quadrant;
+    const variant = faceVariant(model, countryInfo);
     const checked = model === sidebarModel;
     const thumb = isAvailable(model, country, variant)
       ? `<span class="thumb"><img src="${model.face(country, variant, FACE_SIZES[0]).url}" alt="" /></span>`
@@ -513,6 +540,12 @@ function bindSideBar() {
       else sidebar.querySelector('.model-strip [aria-checked="true"]').focus();
     }
   });
+  // Pointing at "Show on the map" downloads the faces it would show
+  const prefetchShown = (e) => {
+    if (e.target.closest('.show-on-map')) prefetchSet(sidebarModel);
+  };
+  sidebar.addEventListener('pointerover', prefetchShown);
+  sidebar.addEventListener('focusin', prefetchShown);
   // Left and right step through the models; up and down still scroll the sidebar
   sidebar.addEventListener('keydown', (e) => {
     const step = { ArrowRight: 1, ArrowLeft: -1 }[e.key];
