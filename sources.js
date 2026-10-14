@@ -58,6 +58,10 @@ export const MODELS = [
   })
 ];
 
+// What the map opens on when the URL names no model: one of the 2026 sets,
+// rather than Midjourney's from 2023
+export const DEFAULT_MODEL = MODELS.find(m => m.id === 'grok-imagine-2');
+
 // A set made by scripts/generate-faces.mjs: one image per person, asked with the same
 // minimal prompt for every model, in public/faces/<id>/. unavailable lists the
 // images the model's moderation rejected on every attempt, by country.

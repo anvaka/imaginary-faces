@@ -1,4 +1,4 @@
-import { MODELS, PEOPLE, FACE_SIZES, isAvailable } from './sources.js';
+import { MODELS, DEFAULT_MODEL, PEOPLE, FACE_SIZES, isAvailable } from './sources.js';
 import { createClipQueue } from './clipQueue.js';
 // Where the face is in each full image, so it can be placed on land
 import faceBoxes from './faceBoxes.json';
@@ -105,7 +105,7 @@ function initMap(borders) {
 
 function getInitialView() {
   const params = new URLSearchParams(location.search);
-  const model = MODELS.find(m => m.id === params.get('model')) || MODELS[0];
+  const model = MODELS.find(m => m.id === params.get('model')) || DEFAULT_MODEL;
   const person = PEOPLE.includes(params.get('person')) ? params.get('person') : PEOPLE[0];
   return { model, person };
 }
@@ -121,7 +121,7 @@ function setView(changes) {
   clearTimeout(prefetchTimer);
 
   const params = new URLSearchParams(location.search);
-  if (view.model === MODELS[0]) params.delete('model');
+  if (view.model === DEFAULT_MODEL) params.delete('model');
   else params.set('model', view.model.id);
   if (view.model.people) params.set('person', view.person);
   else params.delete('person');
